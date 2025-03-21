@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.13.35818.85 d17.13
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TakeoffBridge", "TakeoffBridge.csproj", "{36DCF826-1D13-47D9-A87B-C6615FFCD6BE}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{36DCF826-1D13-47D9-A87B-C6615FFCD6BE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{36DCF826-1D13-47D9-A87B-C6615FFCD6BE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{36DCF826-1D13-47D9-A87B-C6615FFCD6BE}.Debug|x64.ActiveCfg = Debug|x64
+		{36DCF826-1D13-47D9-A87B-C6615FFCD6BE}.Debug|x64.Build.0 = Debug|x64
+		{36DCF826-1D13-47D9-A87B-C6615FFCD6BE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{36DCF826-1D13-47D9-A87B-C6615FFCD6BE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{36DCF826-1D13-47D9-A87B-C6615FFCD6BE}.Release|x64.ActiveCfg = Release|x64
+		{36DCF826-1D13-47D9-A87B-C6615FFCD6BE}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {E77FB389-FD5F-4A44-AF17-F5AE2B7AD076}
+	EndGlobalSection
+EndGlobal
