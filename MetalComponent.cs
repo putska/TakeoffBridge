@@ -21,6 +21,7 @@ namespace TakeoffBridge
 
         // Original length adjustment (keeping for backward compatibility)
         public double LengthAdjustment { get; set; }
+        public bool IsShopUse { get; set; }
 
         // New end-specific adjustments
         public double StartAdjustment { get; set; } // Left for horizontal, Bottom for vertical
@@ -39,6 +40,9 @@ namespace TakeoffBridge
         public double Adjust { get; set; } // Vertical adjustment (inches)
         public bool Clips { get; set; }    // For vertical parts - whether clips attach to this part
 
+        public string Finish { get; set; } // The finish of the part
+        public string Fab { get; set; }  // The fabrication of the part
+
         // Default constructor for JSON deserialization
         public ChildPart()
         {
@@ -56,6 +60,10 @@ namespace TakeoffBridge
             Invert = false;
             Adjust = 0.0;
             Clips = false;
+
+            Finish = "Paint";
+            Fab = "1";
+
         }
 
         public ChildPart(string name, string partType, double lengthAdjustment, string material)
@@ -64,6 +72,7 @@ namespace TakeoffBridge
             PartType = partType;
             LengthAdjustment = lengthAdjustment;
             Material = material;
+            IsShopUse = false;
             MarkNumber = ""; // Will be assigned later
 
             // Initialize new end-specific adjustments
@@ -80,6 +89,9 @@ namespace TakeoffBridge
             Invert = false;
             Adjust = 0.0;
             Clips = false;
+
+            Finish = "Paint";
+            Fab = "1";
         }
 
         // Additional constructor for direct end adjustments
@@ -87,6 +99,7 @@ namespace TakeoffBridge
         {
             Name = name;
             PartType = partType;
+            IsShopUse = false;
             StartAdjustment = startAdjustment;
             EndAdjustment = endAdjustment;
             LengthAdjustment = startAdjustment + endAdjustment; // For backward compatibility
@@ -102,6 +115,9 @@ namespace TakeoffBridge
             Invert = false;
             Adjust = 0.0;
             Clips = false;
+
+            Finish = "Paint";
+            Fab = "1";
         }
 
         // Constructor for fixed length parts
@@ -111,6 +127,7 @@ namespace TakeoffBridge
 
             Name = name;
             PartType = partType;
+            IsShopUse = false;
             FixedLength = fixedLength;
             IsFixedLength = true;
             Material = material;
@@ -126,6 +143,9 @@ namespace TakeoffBridge
             Invert = false;
             Adjust = 0.0;
             Clips = false;
+
+            Finish = "Paint";
+            Fab = "1";
         }
 
         // Calculate the actual length based on parent component length

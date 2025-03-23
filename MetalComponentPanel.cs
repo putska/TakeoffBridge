@@ -272,12 +272,16 @@ namespace TakeoffBridge
                 View = View.Details,
                 FullRowSelect = true
             };
-            partsList.Columns.Add("Name", 120);
-            partsList.Columns.Add("Type", 80);
-            partsList.Columns.Add("Length", 80);
-            partsList.Columns.Add("Start Adj", 80);
-            partsList.Columns.Add("End Adj", 80);
-            partsList.Columns.Add("Attach", 80);
+            partsList.Columns.Add("Name", 100);
+            partsList.Columns.Add("Type", 60);
+            partsList.Columns.Add("Length", 70);
+            partsList.Columns.Add("Fixed", 50);
+            partsList.Columns.Add("ShopUse", 50);
+            partsList.Columns.Add("Adj Left", 70);  // Column 5 (0-based index)
+            partsList.Columns.Add("Adj Right", 70);    // Column 6 (0-based index)
+            partsList.Columns.Add("Attach", 50);
+            partsList.Columns.Add("Finish", 80);
+            partsList.Columns.Add("Fab", 80);
             this.Controls.Add(partsList);
 
             // Add the double-click handler
@@ -502,6 +506,29 @@ namespace TakeoffBridge
                 int textX = partStart + (partEnd - partStart) / 2 - (int)(g.MeasureString(displayName, nameFont).Width / 2);
                 g.DrawString(displayName, nameFont, Brushes.Black, textX, partY - nameFont.Height - 2);
 
+                // Add Finish and Fab info if they exist
+                string extraInfo = "";
+                if (!string.IsNullOrEmpty(part.Finish))
+                    extraInfo += $"Finish: {part.Finish}";
+
+                if (!string.IsNullOrEmpty(part.Fab))
+                {
+                    if (!string.IsNullOrEmpty(extraInfo))
+                        extraInfo += ", ";
+                    extraInfo += $"Fab: {part.Fab}";
+                }
+
+                // Display the extra info if it exists
+                if (!string.IsNullOrEmpty(extraInfo))
+                {
+                    System.Drawing.Font infoFont = new System.Drawing.Font(this.Font.FontFamily, 7, FontStyle.Italic);
+                    float extraInfoWidth = g.MeasureString(extraInfo, infoFont).Width;
+                    int extraTextX = partStart + (partEnd - partStart) / 2 - (int)(extraInfoWidth / 2);
+
+                    // Position it above the part name
+                    g.DrawString(extraInfo, infoFont, Brushes.DarkSlateBlue, extraTextX, partY - nameFont.Height * 2 - 7);
+                }
+
                 // Draw attachment indicators if applicable with better positioning
                 if (!string.IsNullOrEmpty(part.Attach))
                 {
@@ -674,6 +701,23 @@ namespace TakeoffBridge
 
                             // Determine orientation for visualization
                             isHorizontal = !componentType.ToUpper().Contains("VERTICAL");
+
+                            // Update the column headers based on orientation
+                            if (partsList.Columns.Count >= 6) // Make sure we have enough columns
+                            {
+                                if (isHorizontal)
+                                {
+                                    // For horizontal components
+                                    partsList.Columns[5].Text = "Adj Left";
+                                    partsList.Columns[6].Text = "Adj Right";
+                                }
+                                else
+                                {
+                                    // For vertical components
+                                    partsList.Columns[5].Text = "Adj Bott";
+                                    partsList.Columns[6].Text = "Adj Top";
+                                }
+                            }
 
                             // Update parts list
                             UpdatePartsList();
@@ -953,7 +997,7 @@ namespace TakeoffBridge
                 partsList.Items.Clear();
 
                 // Make sure we have the correct column structure
-                if (partsList.Columns.Count < 7)  // Added column for Fixed Length
+                if (partsList.Columns.Count < 10)  // includes finish and fabs
                 {
                     // Remove existing columns first (if any)
                     partsList.Columns.Clear();
@@ -962,10 +1006,13 @@ namespace TakeoffBridge
                     partsList.Columns.Add("Name", 100);
                     partsList.Columns.Add("Type", 60);
                     partsList.Columns.Add("Length", 70);
-                    partsList.Columns.Add("Fixed", 50);   // New column for Fixed flag
-                    partsList.Columns.Add("Start Adj", 70);
-                    partsList.Columns.Add("End Adj", 70);
+                    partsList.Columns.Add("Shop?", 40);
+                    partsList.Columns.Add("Fixed", 50);   
+                    partsList.Columns.Add("Adj Left", 70);
+                    partsList.Columns.Add("Adj Bott", 70);
                     partsList.Columns.Add("Attach", 50);
+                    partsList.Columns.Add("Finish", 80); 
+                    partsList.Columns.Add("Fab", 80);    
                 }
 
                 if (currentParts == null)
@@ -984,6 +1031,7 @@ namespace TakeoffBridge
                         ListViewItem item = new ListViewItem(part.Name);
                         item.SubItems.Add(part.PartType);
                         item.SubItems.Add(actualLength.ToString("F4"));
+                        item.SubItems.Add(part.IsShopUse ? "Yes" : "No"); // Show shop use status
                         item.SubItems.Add(part.IsFixedLength ? "Yes" : "No"); // Show fixed length status
 
                         // Show start/end adjustments (or N/A for fixed length parts)
@@ -999,6 +1047,8 @@ namespace TakeoffBridge
                         }
 
                         item.SubItems.Add(part.Attach ?? ""); // Add attachment property
+                        item.SubItems.Add(part.Finish ?? "");
+                        item.SubItems.Add(part.Fab ?? "");
                         item.Tag = part; // Store reference to the part object
 
                         partsList.Items.Add(item);
@@ -1388,9 +1438,12 @@ namespace TakeoffBridge
     {
         private TextBox txtName;
         private TextBox txtType;
+        private CheckBox chkShopUse;
         private TextBox txtStartAdj;
         private TextBox txtEndAdj;
         private TextBox txtMaterial;
+        private TextBox txtFinish;
+        private TextBox txtFab;
 
         // New controls for fixed length parts
         private CheckBox chkFixedLength;
@@ -1424,7 +1477,7 @@ namespace TakeoffBridge
         {
             this.Text = "Edit Part";
             this.Width = 500;  // Increased width for more controls
-            this.Height = 520; // Increased height for more controls
+            this.Height = 580; // Increased height for more controls
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
             this.MinimizeBox = false;
@@ -1442,6 +1495,17 @@ namespace TakeoffBridge
 
             txtType = new TextBox { Left = 100, Top = 40, Width = 280 };
             this.Controls.Add(txtType);
+
+            // Fixed length checkbox
+            chkShopUse = new CheckBox
+            {
+                Text = "Shop Use",
+                Left = 300,
+                Top = 70,
+                Width = 100
+            };
+
+            this.Controls.Add(chkShopUse);
 
             // Fixed length checkbox
             chkFixedLength = new CheckBox
@@ -1482,25 +1546,39 @@ namespace TakeoffBridge
             txtMaterial = new TextBox { Left = 100, Top = 190, Width = 280 };
             this.Controls.Add(txtMaterial);
 
+            // Finish field
+            Label lblFinish = new Label { Text = "Finish:", Left = 10, Top = 220, Width = 80 };
+            this.Controls.Add(lblFinish);
+
+            txtFinish = new TextBox { Left = 100, Top = 220, Width = 280 };
+            this.Controls.Add(txtFinish);
+
+            // Fab field
+            Label lblFab = new Label { Text = "Fab:", Left = 10, Top = 250, Width = 80 };
+            this.Controls.Add(lblFab);
+
+            txtFab = new TextBox { Left = 100, Top = 250, Width = 280 };
+            this.Controls.Add(txtFab);
+
             // New attachment properties section label - moved down
             Label lblAttachmentSection = new Label
             {
                 Text = "Attachment Properties:",
                 Left = 10,
-                Top = 220,
+                Top = 280,
                 Width = 380,
                 Font = new System.Drawing.Font(this.Font, System.Drawing.FontStyle.Bold)
             };
             this.Controls.Add(lblAttachmentSection);
 
             // Attach property (L/R)
-            Label lblAttach = new Label { Text = "Attach:", Left = 10, Top = 250, Width = 80 };
+            Label lblAttach = new Label { Text = "Attach:", Left = 10, Top = 280, Width = 80 };
             this.Controls.Add(lblAttach);
 
             ComboBox cboAttach = new ComboBox
             {
                 Left = 100,
-                Top = 250,
+                Top = 280,
                 Width = 280,
                 DropDownStyle = ComboBoxStyle.DropDownList
             };
@@ -1512,19 +1590,19 @@ namespace TakeoffBridge
             {
                 Text = "Invert",
                 Left = 100,
-                Top = 280,
+                Top = 310,
                 Width = 280
             };
             this.Controls.Add(chkInvert);
 
             // Adjust value
-            Label lblAdjust = new Label { Text = "Adjust:", Left = 10, Top = 310, Width = 80 };
+            Label lblAdjust = new Label { Text = "Adjust:", Left = 10, Top = 340, Width = 80 };
             this.Controls.Add(lblAdjust);
 
             TextBox txtAdjust = new TextBox
             {
                 Left = 100,
-                Top = 310,
+                Top = 340,
                 Width = 280,
                 Text = "0.0"
             };
@@ -1535,7 +1613,7 @@ namespace TakeoffBridge
             {
                 Text = "Allows Clips",
                 Left = 100,
-                Top = 340,
+                Top = 370,
                 Width = 280
             };
             this.Controls.Add(chkClips);
@@ -1545,7 +1623,7 @@ namespace TakeoffBridge
             {
                 Text = "For horizontal parts: Start=Left, End=Right\nFor vertical parts: Start=Bottom, End=Top",
                 Left = 100,
-                Top = 370,
+                Top = 400,
                 Width = 280,
                 Height = 40
             };
@@ -1556,7 +1634,7 @@ namespace TakeoffBridge
             {
                 Text = "OK",
                 Left = 210,
-                Top = 420,
+                Top = 450,
                 Width = 80,
                 DialogResult = DialogResult.OK
             };
@@ -1567,7 +1645,7 @@ namespace TakeoffBridge
             {
                 Text = "Cancel",
                 Left = 300,
-                Top = 420,
+                Top = 450,
                 Width = 80,
                 DialogResult = DialogResult.Cancel
             };
@@ -1587,7 +1665,7 @@ namespace TakeoffBridge
             {
                 txtName.Text = partToEdit.Name;
                 txtType.Text = partToEdit.PartType;
-
+                chkShopUse.Checked = partToEdit.IsShopUse;
                 // Set fixed length properties
                 chkFixedLength.Checked = partToEdit.IsFixedLength;
                 txtFixedLength.Text = partToEdit.FixedLength.ToString();
@@ -1597,6 +1675,9 @@ namespace TakeoffBridge
                 txtEndAdj.Text = partToEdit.EndAdjustment.ToString();
 
                 txtMaterial.Text = partToEdit.Material;
+                // Set values for finish and fab
+                txtFinish.Text = partToEdit.Finish ?? "";
+                txtFab.Text = partToEdit.Fab ?? "";
 
                 // Set attachment properties
                 cboAttachControl.SelectedItem = partToEdit.Attach ?? "";
@@ -1645,6 +1726,7 @@ namespace TakeoffBridge
                 double fixedLength = double.Parse(txtFixedLength.Text);
                 double adjust = double.Parse(txtAdjustControl.Text);
                 bool isFixedLength = chkFixedLength.Checked;
+                bool isShopUse = chkShopUse.Checked;
 
                 // Create result part based on fixed length setting
                 if (isFixedLength)
@@ -1675,6 +1757,9 @@ namespace TakeoffBridge
                 ResultPart.Invert = chkInvertControl.Checked;
                 ResultPart.Adjust = adjust;
                 ResultPart.Clips = chkClipsControl.Checked;
+                ResultPart.IsShopUse = chkShopUse.Checked;
+                ResultPart.Finish = txtFinish.Text;
+                ResultPart.Fab = txtFab.Text;
             }
             catch (System.Exception ex)
             {

@@ -74,6 +74,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Class1.cs" />
+    <Compile Include="MarkNumberManager.cs" />
+    <Compile Include="MarkNumberManagerCommands.cs" />
     <Compile Include="MetalComponent.cs" />
     <Compile Include="MetalComponentPanel.cs">
       <SubType>UserControl</SubType>

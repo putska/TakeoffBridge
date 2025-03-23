@@ -15,6 +15,7 @@ using Newtonsoft.Json;
 [assembly: ExtensionApplication(typeof(GlassTakeoffBridge.GlassTakeoffApp))]
 [assembly: CommandClass(typeof(GlassTakeoffBridge.GlassTakeoffCommands))]
 [assembly: CommandClass(typeof(TakeoffBridge.MetalComponentCommands))]
+[assembly: CommandClass(typeof(TakeoffBridge.MarkNumberManagerCommands))]
 
 namespace GlassTakeoffBridge
 {
@@ -43,16 +44,210 @@ namespace GlassTakeoffBridge
     // Main application class
     public class GlassTakeoffApp : IExtensionApplication
     {
+        // Static reference to our mark number manager
+        private static TakeoffBridge.MarkNumberManager _markNumberManager;
+
+        // Public property to access the manager from other classes
+        public static TakeoffBridge.MarkNumberManager MarkNumberManager
+        {
+            get
+            {
+                if (_markNumberManager == null)
+                {
+                    _markNumberManager = TakeoffBridge.MarkNumberManager.Instance;
+                }
+                return _markNumberManager;
+            }
+        }
+
         public void Initialize()
         {
             // Called when AutoCAD loads the plugin
             Document doc = Application.DocumentManager.MdiActiveDocument;
             doc.Editor.WriteMessage("\nGlass Takeoff Bridge loaded successfully.");
+
+            // Initialize the mark number manager
+            _markNumberManager = TakeoffBridge.MarkNumberManager.Instance;
+
+            // Subscribe to AutoCAD events
+            SetupDocumentEvents();
+
+            doc.Editor.WriteMessage("\nMark Number Manager initialized successfully.");
         }
 
         public void Terminate()
         {
             // Called when AutoCAD unloads the plugin
+        }
+
+        private void SetupDocumentEvents()
+        {
+            // Subscribe to document events
+            Application.DocumentManager.DocumentCreated += DocumentManager_DocumentCreated;
+            Application.DocumentManager.DocumentActivated += DocumentManager_DocumentActivated;
+
+            // Set up the current document's events
+            if (Application.DocumentManager.MdiActiveDocument != null)
+            {
+                SetupCurrentDocumentEvents();
+            }
+        }
+
+        private void DocumentManager_DocumentCreated(object sender, DocumentCollectionEventArgs e)
+        {
+            // Reset mark number manager when a new document is created
+            _markNumberManager = null;
+
+            // Setup events for the new document
+            SetupCurrentDocumentEvents();
+        }
+
+        private void DocumentManager_DocumentActivated(object sender, DocumentCollectionEventArgs e)
+        {
+            // Reset mark number manager when switching documents
+            _markNumberManager = null;
+
+            // Setup events for the newly activated document
+            SetupCurrentDocumentEvents();
+        }
+
+        private void SetupCurrentDocumentEvents()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc != null)
+            {
+                // Hook into the document events that we need for mark number management
+                Database db = doc.Database;
+
+                // ObjectModified events can be used to detect when entities are modified
+                db.ObjectModified += Database_ObjectModified;
+
+                // You might also want to handle these events
+                db.ObjectAppended += Database_ObjectAppended;
+                db.ObjectErased += Database_ObjectErased;
+            }
+        }
+
+        private void Database_ObjectAppended(object sender, ObjectEventArgs e)
+        {
+            // When a new object is added to the drawing
+            try
+            {
+                Document doc = Application.DocumentManager.MdiActiveDocument;
+                Database db = doc.Database;
+
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    DBObject obj = tr.GetObject(e.DBObject.ObjectId, OpenMode.ForRead);
+
+                    // Check if this is a metal component
+                    if (obj is Entity)
+                    {
+                        Entity ent = obj as Entity;
+
+                        // Check if it has METALCOMP Xdata
+                        ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
+                        if (rbComp != null)
+                        {
+                            // Store the ObjectId to process later
+                            ObjectId idToProcess = e.DBObject.ObjectId;
+
+                            // Use the Idle event to process after transaction completes
+                            Application.Idle += delegate
+                            {
+                                Application.Idle -= delegate { };  // Remove the handler
+                                MarkNumberManager.OnComponentCreated(idToProcess);
+                            };
+                        }
+                    }
+
+                    tr.Commit();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                // Log error but don't crash
+                System.Diagnostics.Debug.WriteLine($"Error in ObjectAppended: {ex.Message}");
+            }
+        }
+
+        private void Database_ObjectModified(object sender, ObjectEventArgs e)
+        {
+            // When an object is modified in the drawing
+            try
+            {
+                Document doc = Application.DocumentManager.MdiActiveDocument;
+                Database db = doc.Database;
+
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    DBObject obj = tr.GetObject(e.DBObject.ObjectId, OpenMode.ForRead);
+
+                    // Check if this is a metal component
+                    if (obj is Entity)
+                    {
+                        Entity ent = obj as Entity;
+
+                        // Check if it has METALCOMP Xdata
+                        ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
+                        if (rbComp != null)
+                        {
+                            // Store the ObjectId to process later
+                            ObjectId idToProcess = e.DBObject.ObjectId;
+
+                            // Check if it's a stretch operation (by checking if length changed)
+                            if (ent is Polyline)
+                            {
+                                Polyline pline = ent as Polyline;
+                                double newLength = pline.Length;
+
+                                // Use the Idle event to process after transaction completes
+                                Application.Idle += delegate
+                                {
+                                    Application.Idle -= delegate { };  // Remove the handler
+                                    MarkNumberManager.OnComponentStretched(idToProcess, newLength);
+                                };
+                            }
+                            else
+                            {
+                                // General modification
+                                Application.Idle += delegate
+                                {
+                                    Application.Idle -= delegate { };  // Remove the handler
+                                    MarkNumberManager.OnComponentModified(idToProcess);
+                                };
+                            }
+                        }
+                    }
+
+                    tr.Commit();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                // Log error but don't crash
+                System.Diagnostics.Debug.WriteLine($"Error in ObjectModified: {ex.Message}");
+            }
+        }
+
+        private void Database_ObjectErased(object sender, ObjectErasedEventArgs e)
+        {
+            // When an object is erased from the drawing
+            // This can be used to clean up references when objects are deleted
+            if (!e.Erased)
+            {
+                // Object is being deleted
+                try
+                {
+                    // You could potentially clean up references or perform other actions
+                    // when metal components are deleted
+                    System.Diagnostics.Debug.WriteLine($"Object {e.DBObject.ObjectId} erased");
+                }
+                catch (System.Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Error in ObjectErased: {ex.Message}");
+                }
+            }
         }
     }
 
