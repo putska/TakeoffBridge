@@ -7,6 +7,7 @@ using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Windows;
 using System.Linq;
+using System.Net.Mail;
 
 // This file contains our custom MetalComponent entity definition
 
@@ -17,15 +18,45 @@ namespace TakeoffBridge
     {
         public string Name { get; set; }
         public string PartType { get; set; }
+
+        // Original length adjustment (keeping for backward compatibility)
         public double LengthAdjustment { get; set; }
+
+        // New end-specific adjustments
+        public double StartAdjustment { get; set; } // Left for horizontal, Bottom for vertical
+        public double EndAdjustment { get; set; }   // Right for horizontal, Top for vertical
+
+        // New fixed length property
+        public bool IsFixedLength { get; set; }
+        public double FixedLength { get; set; }
+
         public string MarkNumber { get; set; }
         public string Material { get; set; }
 
-        // New attachment properties
+        // Attachment properties
         public string Attach { get; set; } // "L", "R", or null/empty
-        public bool Invert { get; set; } // Whether the part should be inverted
+        public bool Invert { get; set; }   // Whether the part should be inverted
         public double Adjust { get; set; } // Vertical adjustment (inches)
-        public bool Clips { get; set; } // For vertical parts - whether clips attach to this part
+        public bool Clips { get; set; }    // For vertical parts - whether clips attach to this part
+
+        // Default constructor for JSON deserialization
+        public ChildPart()
+        {
+            // Initialize default values
+            Name = "";
+            PartType = "";
+            LengthAdjustment = 0.0;
+            StartAdjustment = 0.0;
+            EndAdjustment = 0.0;
+            IsFixedLength = false;
+            FixedLength = 0.0;
+            Material = "";
+            MarkNumber = "";
+            Attach = "";
+            Invert = false;
+            Adjust = 0.0;
+            Clips = false;
+        }
 
         public ChildPart(string name, string partType, double lengthAdjustment, string material)
         {
@@ -35,7 +66,62 @@ namespace TakeoffBridge
             Material = material;
             MarkNumber = ""; // Will be assigned later
 
-            // Initialize new properties with defaults
+            // Initialize new end-specific adjustments
+            // Initially set them to half the total adjustment on each end
+            StartAdjustment = lengthAdjustment / 2;
+            EndAdjustment = lengthAdjustment / 2;
+
+            // Default to non-fixed length
+            IsFixedLength = false;
+            FixedLength = 0.0;
+
+            // Initialize attachment properties with defaults
+            Attach = "";
+            Invert = false;
+            Adjust = 0.0;
+            Clips = false;
+        }
+
+        // Additional constructor for direct end adjustments
+        public ChildPart(string name, string partType, double startAdjustment, double endAdjustment, string material)
+        {
+            Name = name;
+            PartType = partType;
+            StartAdjustment = startAdjustment;
+            EndAdjustment = endAdjustment;
+            LengthAdjustment = startAdjustment + endAdjustment; // For backward compatibility
+            Material = material;
+            MarkNumber = "";
+
+            // Default to non-fixed length
+            IsFixedLength = false;
+            FixedLength = 0.0;
+
+            // Initialize attachment properties with defaults
+            Attach = "";
+            Invert = false;
+            Adjust = 0.0;
+            Clips = false;
+        }
+
+        // Constructor for fixed length parts
+        public ChildPart(string name, string partType, double fixedLength, string material, bool isFixed)
+        {
+            if (!isFixed) throw new ArgumentException("This constructor should only be used for fixed length parts");
+
+            Name = name;
+            PartType = partType;
+            FixedLength = fixedLength;
+            IsFixedLength = true;
+            Material = material;
+            MarkNumber = "";
+
+            // Set adjustments to 0 for fixed length parts
+            StartAdjustment = 0;
+            EndAdjustment = 0;
+            LengthAdjustment = 0;
+
+            // Initialize attachment properties with defaults
             Attach = "";
             Invert = false;
             Adjust = 0.0;
@@ -45,7 +131,26 @@ namespace TakeoffBridge
         // Calculate the actual length based on parent component length
         public double GetActualLength(double parentLength)
         {
-            return parentLength + LengthAdjustment;
+            // If fixed length, just return that value
+            if (IsFixedLength)
+            {
+                return FixedLength;
+            }
+
+            // Otherwise use the sum of both adjustments to get the total length adjustment
+            return parentLength + StartAdjustment + EndAdjustment;
+        }
+
+        // Calculate the actual start point offset
+        public double GetStartOffset()
+        {
+            return StartAdjustment;
+        }
+
+        // Calculate the actual end point offset
+        public double GetEndOffset()
+        {
+            return EndAdjustment;
         }
     }
 
@@ -55,6 +160,139 @@ namespace TakeoffBridge
         // Use the same naming throughout
         public static string PendingHandle = null; // Note: no underscore, and public access
         public static List<ChildPart> PendingParts = null; // Note: no underscore, and public access
+        public static ParentComponentData PendingParentData;
+        public static CopyPropertyData PendingCopyData;
+
+        // Add these classes
+        public class ParentComponentData
+        {
+            public string ComponentType { get; set; }
+            public string Floor { get; set; }
+            public string Elevation { get; set; }
+        }
+
+        public class CopyPropertyData
+        {
+            public string SourceHandle { get; set; }
+            public List<string> TargetHandles { get; set; }
+            public string ComponentType { get; set; }
+            public string Floor { get; set; }
+            public string Elevation { get; set; }
+            public List<ChildPart> Parts { get; set; }
+        }
+
+        // New CommandMethod to update parent data
+        [CommandMethod("UPDATEPARENT")]
+        public void UpdateParent()
+        {
+            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+            Database db = doc.Database;
+
+            try
+            {
+                // Check if we have pending data
+                if (PendingHandle == null || PendingParentData == null)
+                {
+                    ed.WriteMessage("\nNo pending parent data update.");
+                    return;
+                }
+
+                // Get the object ID from handle
+                long longHandle = Convert.ToInt64(PendingHandle, 16);
+                Handle h = new Handle(longHandle);
+                ObjectId objId = db.GetObjectId(false, h, 0);
+
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    // Get the entity
+                    Entity ent = tr.GetObject(objId, OpenMode.ForWrite) as Entity;
+
+                    // Create component Xdata
+                    ResultBuffer rb = new ResultBuffer(
+                        new TypedValue((int)DxfCode.ExtendedDataRegAppName, "METALCOMP"),
+                        new TypedValue((int)DxfCode.ExtendedDataAsciiString, PendingParentData.ComponentType),
+                        new TypedValue((int)DxfCode.ExtendedDataAsciiString, PendingParentData.Floor),
+                        new TypedValue((int)DxfCode.ExtendedDataAsciiString, PendingParentData.Elevation)
+                    );
+
+                    ent.XData = rb;
+                    tr.Commit();
+                }
+
+                // Clear pending data
+                //PendingHandle = null;
+                PendingParentData = null;
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nError in UPDATEPARENT: {ex.Message}");
+            }
+        }
+
+        [CommandMethod("EXECUTECOPY")]
+        public void ExecuteCopy()
+        {
+            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+            Database db = doc.Database;
+
+            try
+            {
+                // Check if we have pending data
+                if (PendingCopyData == null)
+                {
+                    ed.WriteMessage("\nNo pending copy operation.");
+                    return;
+                }
+
+                // Process each target
+                foreach (string targetHandle in PendingCopyData.TargetHandles)
+                {
+                    // Get the object ID from handle
+                    long longHandle = Convert.ToInt64(targetHandle, 16);
+                    Handle h = new Handle(longHandle);
+                    ObjectId objId = db.GetObjectId(false, h, 0);
+
+                    // Update parent data if needed
+                    if (PendingCopyData.ComponentType != null)
+                    {
+                        using (Transaction tr = db.TransactionManager.StartTransaction())
+                        {
+                            Entity ent = tr.GetObject(objId, OpenMode.ForWrite) as Entity;
+
+                            ResultBuffer rb = new ResultBuffer(
+                                new TypedValue((int)DxfCode.ExtendedDataRegAppName, "METALCOMP"),
+                                new TypedValue((int)DxfCode.ExtendedDataAsciiString, PendingCopyData.ComponentType),
+                                new TypedValue((int)DxfCode.ExtendedDataAsciiString, PendingCopyData.Floor),
+                                new TypedValue((int)DxfCode.ExtendedDataAsciiString, PendingCopyData.Elevation)
+                            );
+
+                            ent.XData = rb;
+                            tr.Commit();
+                        }
+                    }
+
+                    // Update child parts if needed
+                    if (PendingCopyData.Parts != null)
+                    {
+                        // Store in static fields for the parts update command
+                        PendingHandle = targetHandle;
+                        PendingParts = new List<ChildPart>(PendingCopyData.Parts);
+
+                        // Execute the update parts command
+                        doc.SendStringToExecute("UPDATEMETAL ", true, false, false);
+                    }
+                }
+
+                // Clear pending data
+                PendingCopyData = null;
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nError in EXECUTECOPY: {ex.Message}");
+            }
+        }
 
         [CommandMethod("ADDMETALPART")]
         public void AddMetalPart()
@@ -145,21 +383,37 @@ namespace TakeoffBridge
                     );
                     pline.XData = rbComp;
 
-                    // Create child parts
+                    // Create child parts with end-specific adjustments
                     List<ChildPart> childParts = new List<ChildPart>();
                     if (componentType.ToUpper() == "HORIZONTAL")
                     {
-                        childParts.Add(new ChildPart("Horizontal Body", "HB", 0.0, "Aluminum"));
-                        childParts.Add(new ChildPart("Flat Filler", "FF", -0.03125, "Aluminum"));
-                        childParts.Add(new ChildPart("Face Cap", "FC", 0.0, "Aluminum"));
-                        childParts.Add(new ChildPart("Shear Block Left", "SBL", -1.25, "Aluminum"));
-                        childParts.Add(new ChildPart("Shear Block Right", "SBR", -1.25, "Aluminum"));
+                        // Create parts with specific start and end adjustments
+                        childParts.Add(new ChildPart("Horizontal Body", "HB", 0.0, 0.0, "Aluminum"));
+                        childParts.Add(new ChildPart("Flat Filler", "FF", -0.03125, 0.0, "Aluminum"));
+                        childParts.Add(new ChildPart("Face Cap", "FC", 0.0, 0.0, "Aluminum"));
+
+                        // Left side attachments
+                        ChildPart sbLeft = new ChildPart("Shear Block Left", "SBL", -1.25, 0.0, "Aluminum");
+                        sbLeft.Attach = "L"; // Set attachment side
+                        childParts.Add(sbLeft);
+
+                        // Right side attachments
+                        ChildPart sbRight = new ChildPart("Shear Block Right", "SBR", 0.0, -1.25, "Aluminum");
+                        sbRight.Attach = "R"; // Set attachment side
+                        childParts.Add(sbRight);
                     }
                     else if (componentType.ToUpper() == "VERTICAL")
                     {
-                        childParts.Add(new ChildPart("Vertical Body", "VB", 0.0, "Aluminum"));
-                        childParts.Add(new ChildPart("Pressure Plate", "PP", -0.0625, "Aluminum"));
-                        childParts.Add(new ChildPart("Snap Cover", "SC", -0.125, "Aluminum"));
+                        // Create vertical parts with bottom/top adjustments
+                        ChildPart vb = new ChildPart("Vertical Body", "VB", 0.0, 0.0, "Aluminum");
+                        vb.Clips = true; // Enable clips for this part
+                        childParts.Add(vb);
+
+                        // Bottom-adjusted part
+                        childParts.Add(new ChildPart("Pressure Plate", "PP", -0.0625, 0.0, "Aluminum"));
+
+                        // Top-adjusted part
+                        childParts.Add(new ChildPart("Snap Cover", "SC", 0.0, -0.125, "Aluminum"));
                     }
 
                     // Store child parts as JSON in additional Xdata
@@ -194,7 +448,7 @@ namespace TakeoffBridge
                     // Check if the object was created successfully
                     ed.WriteMessage($"\nMetal component created with handle: {pline.Handle}");
                     ed.WriteMessage($"\nLocation: ({pline.GetPoint2dAt(0).X}, {pline.GetPoint2dAt(0).Y}) to ({pline.GetPoint2dAt(1).X}, {pline.GetPoint2dAt(1).Y})");
-                    ed.WriteMessage($"\nComponent has {childParts.Count} child parts");
+                    ed.WriteMessage($"\nComponent has {childParts.Count} child parts with end-specific adjustments");
                 }
             }
             catch (System.Exception ex)
@@ -315,6 +569,107 @@ namespace TakeoffBridge
         }
 
 
+        private Point3d CalculateAdjustedPointForPart(Point3d startPoint, Point3d endPoint, ChildPart part, string orientation)
+        {
+            // For horizontal components
+            if (orientation.ToUpper() == "HORIZONTAL")
+            {
+                // Get the direction vector
+                Vector3d direction = endPoint - startPoint;
+                // Alternative approach if GetNormalized() is not available:
+                double length = direction.Length;
+                if (length > 0)
+                {
+                     direction = direction / length;
+                 }
+
+                // Calculate the adjusted start point (accounting for StartAdjustment)
+                Point3d adjustedStartPoint = startPoint + (direction * part.StartAdjustment);
+
+                // Calculate the adjusted end point (accounting for EndAdjustment)
+                Point3d adjustedEndPoint = endPoint - (direction * part.EndAdjustment);
+
+                // Return the appropriate point based on the part's attachment side
+                if (part.Attach == "L")
+                {
+                    return adjustedStartPoint;
+                }
+                else if (part.Attach == "R")
+                {
+                    return adjustedEndPoint;
+                }
+                else
+                {
+                    // If no specific side, return the midpoint
+                    return new Point3d(
+                        (adjustedStartPoint.X + adjustedEndPoint.X) / 2,
+                        (adjustedStartPoint.Y + adjustedEndPoint.Y) / 2,
+                        (adjustedStartPoint.Z + adjustedEndPoint.Z) / 2
+                    );
+                }
+            }
+            // For vertical components
+            else if (orientation.ToUpper() == "VERTICAL")
+            {
+                // For vertical components, assume Y is up/down
+                // Determine which point is bottom and which is top
+                Point3d bottomPoint, topPoint;
+                if (startPoint.Y < endPoint.Y)
+                {
+                    bottomPoint = startPoint;
+                    topPoint = endPoint;
+                }
+                else
+                {
+                    bottomPoint = endPoint;
+                    topPoint = startPoint;
+                }
+
+                // Get the direction vector
+                Vector3d direction = topPoint - bottomPoint;
+                double length = direction.Length;
+                if (length > 0)
+                {
+                    direction = direction / length;
+                }
+
+                // Calculate the adjusted bottom point (accounting for StartAdjustment)
+                Point3d adjustedBottomPoint = bottomPoint + (direction * part.StartAdjustment);
+
+                // Calculate the adjusted top point (accounting for EndAdjustment)
+                Point3d adjustedTopPoint = topPoint - (direction * part.EndAdjustment);
+
+                // Return the appropriate point based on the clips property
+                if (part.Clips)
+                {
+                    // For parts with clips, you may want to return the whole adjusted line segment
+                    // But for now, let's return the midpoint as an example
+                    return new Point3d(
+                        (adjustedBottomPoint.X + adjustedTopPoint.X) / 2,
+                        (adjustedBottomPoint.Y + adjustedTopPoint.Y) / 2,
+                        (adjustedBottomPoint.Z + adjustedTopPoint.Z) / 2
+                    );
+                }
+                else
+                {
+                    // For parts without clips, return the midpoint as default
+                    return new Point3d(
+                        (adjustedBottomPoint.X + adjustedTopPoint.X) / 2,
+                        (adjustedBottomPoint.Y + adjustedTopPoint.Y) / 2,
+                        (adjustedBottomPoint.Z + adjustedTopPoint.Z) / 2
+                    );
+                }
+            }
+
+            // Default case - return the midpoint of the original line
+            return new Point3d(
+                (startPoint.X + endPoint.X) / 2,
+                (startPoint.Y + endPoint.Y) / 2,
+                (startPoint.Z + endPoint.Z) / 2
+            );
+        }
+
+        // Modified method for detecting attachments
         [CommandMethod("DETECTATTACHMENTS")]
         public void DetectAttachments()
         {
@@ -322,7 +677,7 @@ namespace TakeoffBridge
             Editor ed = doc.Editor;
             Database db = doc.Database;
 
-            ed.WriteMessage("\nDetecting part attachments...");
+            ed.WriteMessage("\nDetecting part attachments with end-specific adjustments...");
 
             try
             {
@@ -417,7 +772,7 @@ namespace TakeoffBridge
                     // Process each vertical
                     foreach (var vertical in verticals)
                     {
-                        // Calculate vertical bottom and top points
+                        // Calculate vertical bottom and top points, accounting for parts with adjustments
                         Point3d verticalBottom, verticalTop;
                         if (vertical.StartPoint.Y < vertical.EndPoint.Y)
                         {
@@ -430,49 +785,91 @@ namespace TakeoffBridge
                             verticalTop = vertical.StartPoint;
                         }
 
-                        // Find horizontals that might intersect
-                        foreach (var horizontal in horizontals)
+                        // Find parts in vertical that allow clips
+                        var clipParts = vertical.Parts.Where(p => p.Clips).ToList();
+
+                        foreach (var clipPart in clipParts)
                         {
-                            // Check for intersection or proximity (with 6" threshold)
-                            if (LinesIntersect(vertical.StartPoint, vertical.EndPoint,
-                                              horizontal.StartPoint, horizontal.EndPoint,
-                                              out Point3d intersectionPt,
-                                              proximityThreshold: 6.0))
+                            // Calculate adjusted vertical points for this specific part
+                            // For vertical parts, StartAdjustment affects bottom, EndAdjustment affects top
+                            Vector3d direction = verticalTop - verticalBottom;
+                            double length = direction.Length;
+                            if (length > 0)
                             {
-                                // Determine which side (L or R) the vertical is on
-                                string side = DetermineSide(horizontal.StartPoint, horizontal.EndPoint,
-                                                           vertical.StartPoint, vertical.EndPoint);
+                                direction = direction / length;
+                            }
 
-                                // Find parts in horizontal that attach on this side
-                                var attachingParts = horizontal.Parts.Where(p => p.Attach == side).ToList();
+                            Point3d adjustedBottom = verticalBottom + (direction * clipPart.StartAdjustment);
+                            Point3d adjustedTop = verticalTop - (direction * clipPart.EndAdjustment);
 
-                                // Find parts in vertical that allow clips
-                                var clipParts = vertical.Parts.Where(p => p.Clips).ToList();
+                            // Find horizontals that might intersect with this adjusted vertical
+                            foreach (var horizontal in horizontals)
+                            {
+                                // Find parts in horizontal that have attachments
+                                var attachingParts = horizontal.Parts.Where(p => !string.IsNullOrEmpty(p.Attach)).ToList();
 
-                                // Calculate height from vertical bottom
-                                double height = intersectionPt.Y - verticalBottom.Y;
-
-                                // Create attachments
                                 foreach (var hPart in attachingParts)
                                 {
-                                    foreach (var vPart in clipParts)
+                                    // Calculate the adjusted horizontal points for this specific part
+                                    Point3d horizontalStart, horizontalEnd;
+                                    if (horizontal.StartPoint.X < horizontal.EndPoint.X)
                                     {
-                                        Attachment attachment = new Attachment
+                                        horizontalStart = horizontal.StartPoint;
+                                        horizontalEnd = horizontal.EndPoint;
+                                    }
+                                    else
+                                    {
+                                        horizontalStart = horizontal.EndPoint;
+                                        horizontalEnd = horizontal.StartPoint;
+                                    }
+
+                                    Vector3d hDirection = horizontalEnd - horizontalStart;
+                                    //hDirection = hDirection.GetNormalizedVector();
+                                    double hLength = hDirection.Length;
+                                    if (hLength > 0)
+                                    {
+                                        hDirection = hDirection / hLength;
+                                    }
+
+                                    Point3d adjustedStart = horizontalStart + (hDirection * hPart.StartAdjustment);
+                                    Point3d adjustedEnd = horizontalEnd - (hDirection * hPart.EndAdjustment);
+
+                                    // Check for intersection between adjusted vertical and horizontal parts
+                                    if (LinesIntersect(adjustedBottom, adjustedTop,
+                                                      adjustedStart, adjustedEnd,
+                                                      out Point3d intersectionPt,
+                                                      proximityThreshold: 6.0))
+                                    {
+                                        // Determine which side (L or R) the vertical is on
+                                        string side = DetermineSide(adjustedStart, adjustedEnd,
+                                                                 adjustedBottom, adjustedTop);
+
+                                        // If part attaches on the determined side
+                                        if (hPart.Attach == side)
                                         {
-                                            HorizontalHandle = horizontal.Handle,
-                                            VerticalHandle = vertical.Handle,
-                                            HorizontalPartType = hPart.PartType,
-                                            VerticalPartType = vPart.PartType,
-                                            Side = side,
-                                            Position = CalculatePosition(horizontal.StartPoint, horizontal.EndPoint, intersectionPt),
-                                            Height = height,
-                                            Invert = hPart.Invert,
-                                            Adjust = hPart.Adjust
-                                        };
+                                            // Calculate height from vertical bottom
+                                            double height = intersectionPt.Y - verticalBottom.Y;
 
-                                        attachments.Add(attachment);
+                                            // Calculate position along horizontal
+                                            double position = CalculatePosition(horizontal.StartPoint, horizontal.EndPoint, intersectionPt);
 
-                                        ed.WriteMessage($"\n    Attachment: {hPart.PartType} to {vPart.PartType} on {side} side at height {height:F3}");
+                                            Attachment attachment = new Attachment
+                                            {
+                                                HorizontalHandle = horizontal.Handle,
+                                                VerticalHandle = vertical.Handle,
+                                                HorizontalPartType = hPart.PartType,
+                                                VerticalPartType = clipPart.PartType,
+                                                Side = side,
+                                                Position = position,
+                                                Height = height,
+                                                Invert = hPart.Invert,
+                                                Adjust = hPart.Adjust
+                                            };
+
+                                            attachments.Add(attachment);
+
+                                            ed.WriteMessage($"\n    Attachment: {hPart.PartType} to {clipPart.PartType} on {side} side at height {height:F3}");
+                                        }
                                     }
                                 }
                             }
@@ -480,10 +877,10 @@ namespace TakeoffBridge
                     }
                 }
 
-                // Save attachments to the drawing (existing code)
+                // Save attachments to the drawing
                 SaveAttachmentsToDrawing(attachments);
 
-                ed.WriteMessage($"\nDetected {attachments.Count} attachments");
+                ed.WriteMessage($"\nDetected {attachments.Count} attachments with end-specific adjustments");
             }
             catch (System.Exception ex)
             {
@@ -612,16 +1009,46 @@ namespace TakeoffBridge
 
         private string DetermineSide(Point3d hStart, Point3d hEnd, Point3d vStart, Point3d vEnd)
         {
-            // Create vectors
-            Vector3d hVec = hEnd - hStart;
-            Vector3d vVec = vEnd - vStart;
+            // Ensure horizontal vector always goes left to right
+            Point3d hLeft, hRight;
+            if (hStart.X <= hEnd.X)
+            {
+                hLeft = hStart;
+                hRight = hEnd;
+            }
+            else
+            {
+                hLeft = hEnd;
+                hRight = hStart;
+            }
 
-            // Cross product to determine side
-            double crossZ = hVec.X * vVec.Y - hVec.Y * vVec.X;
+            // Get the X coordinate of the vertical
+            double vX = (vStart.X + vEnd.X) / 2.0;  // Midpoint X
 
-            // Positive cross product means vertical is on the right side of horizontal
-            // Note: This depends on your coordinate system - may need to adjust
-            return crossZ > 0 ? "R" : "L";
+            // Debug output
+            Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor.WriteMessage(
+                $"\nHorizontal X range: {hLeft.X:F3} to {hRight.X:F3}, Vertical X: {vX:F3}");
+
+            // UPDATED LOGIC: Now returning the side from the vertical's perspective
+
+            // If vertical's X is less than horizontal's left X, horizontal is on vertical's right
+            if (vX < hLeft.X)
+            {
+                return "R";  // Changed from "L" to "R"
+            }
+
+            // If vertical's X is greater than horizontal's right X, horizontal is on vertical's left
+            if (vX > hRight.X)
+            {
+                return "L";  // Changed from "R" to "L"
+            }
+
+            // If vertical's X is between horizontal's endpoints, determine based on which end it's closer to
+            double distToLeft = Math.Abs(vX - hLeft.X);
+            double distToRight = Math.Abs(vX - hRight.X);
+
+            // Return the side from vertical's perspective
+            return distToLeft < distToRight ? "R" : "L";  // Swapped "L" and "R"
         }
 
         private double CalculatePosition(Point3d start, Point3d end, Point3d point)
@@ -677,7 +1104,7 @@ namespace TakeoffBridge
         }
 
         // Method to get all parts data from a polyline
-        private string GetPartsJsonFromEntity(Polyline pline)
+        public static string GetPartsJsonFromEntity(Polyline pline)
         {
             // First check if we have the chunk count info
             ResultBuffer rbInfo = pline.GetXDataForApplication("METALPARTSINFO");
@@ -709,6 +1136,8 @@ namespace TakeoffBridge
 
             return partsJson;
         }
+
+
 
         [CommandMethod("LISTATTACHMENTS")]
         public void ListAttachments()
@@ -959,7 +1388,7 @@ namespace TakeoffBridge
 
             try
             {
-                ed.WriteMessage("\nStarting Metal Editor...");
+                ed.WriteMessage("\nStarting Enhanced Metal Editor...");
 
                 // Check if the palette set already exists
                 if (_paletteSet == null)
@@ -967,18 +1396,18 @@ namespace TakeoffBridge
                     ed.WriteMessage("\nCreating palette set...");
 
                     // Create new palette set with a unique GUID
-                    _paletteSet = new PaletteSet("Metal Component Editor",
+                    _paletteSet = new PaletteSet("Enhanced Metal Component Editor",
                         new Guid("1D8F97D4-C5E8-4A59-B1F3-53431D97C9A2"));
 
-                    ed.WriteMessage("\nCreating panel...");
+                    ed.WriteMessage("\nCreating enhanced panel...");
 
-                    // Create the panel explicitly first
-                    MetalComponentPanel panel = new MetalComponentPanel();
+                    // Create the enhanced panel explicitly first
+                    EnhancedMetalComponentPanel panel = new EnhancedMetalComponentPanel();
 
                     // Add panel to palette set
                     _paletteSet.Add("Metal Parts", panel);
 
-                    ed.WriteMessage("\nPanel added successfully.");
+                    ed.WriteMessage("\nEnhanced panel added successfully.");
                 }
 
                 // Show the palette set
@@ -991,6 +1420,134 @@ namespace TakeoffBridge
                 ed.WriteMessage($"\nStack trace: {ex.StackTrace}");
             }
         }
+
+
+        [CommandMethod("COPYPROPERTY")]
+        public void CopyProperty()
+        {
+            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+
+            // Prompt for source component
+            PromptEntityOptions peoSource = new PromptEntityOptions("\nSelect source component: ");
+            peoSource.SetRejectMessage("\nOnly polylines with metal component data can be selected.");
+            peoSource.AddAllowedClass(typeof(Polyline), false);
+
+            PromptEntityResult perSource = ed.GetEntity(peoSource);
+            if (perSource.Status != PromptStatus.OK) return;
+
+            ObjectId sourceId = perSource.ObjectId;
+
+            // Get source data
+            string componentType = "", floor = "", elevation = "";
+            List<ChildPart> sourceParts = new List<ChildPart>();
+
+            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+            {
+                Entity ent = tr.GetObject(sourceId, OpenMode.ForRead) as Entity;
+                if (ent is Polyline)
+                {
+                    // Get component properties
+                    ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
+                    if (rbComp != null)
+                    {
+                        TypedValue[] xdataComp = rbComp.AsArray();
+                        for (int i = 1; i < xdataComp.Length; i++)
+                        {
+                            if (i == 1) componentType = xdataComp[i].Value.ToString();
+                            if (i == 2) floor = xdataComp[i].Value.ToString();
+                            if (i == 3) elevation = xdataComp[i].Value.ToString();
+                        }
+                    }
+
+                    // Get parts
+                    string partsJson = GetPartsJsonFromEntity(ent as Polyline);
+                    if (!string.IsNullOrEmpty(partsJson))
+                    {
+                        try
+                        {
+                            sourceParts = Newtonsoft.Json.JsonConvert.DeserializeObject<List<ChildPart>>(partsJson);
+                        }
+                        catch { /* Handle error */ }
+                    }
+                }
+
+                tr.Commit();
+            }
+
+            if (sourceParts.Count == 0)
+            {
+                ed.WriteMessage("\nNo parts found in source component.");
+                return;
+            }
+
+            // Ask if user wants to copy parent data, child data, or both
+            PromptKeywordOptions pKeyOpts = new PromptKeywordOptions("\nWhat to copy? ");
+            pKeyOpts.Keywords.Add("Parent");
+            pKeyOpts.Keywords.Add("Child");
+            pKeyOpts.Keywords.Add("Both");
+            pKeyOpts.AllowNone = false;
+            pKeyOpts.Keywords.Default = "Both";
+
+            PromptResult pKeyRes = ed.GetKeywords(pKeyOpts);
+            if (pKeyRes.Status != PromptStatus.OK) return;
+
+            bool copyParent = pKeyRes.StringResult == "Parent" || pKeyRes.StringResult == "Both";
+            bool copyChild = pKeyRes.StringResult == "Child" || pKeyRes.StringResult == "Both";
+
+            // Prompt for selection set of targets
+            PromptSelectionOptions pso = new PromptSelectionOptions();
+            pso.MessageForAdding = "\nSelect target components to receive properties: ";
+
+            PromptSelectionResult psr = ed.GetSelection(pso);
+            if (psr.Status != PromptStatus.OK) return;
+
+            SelectionSet ss = psr.Value;
+
+            // Store for command-based update
+            List<string> targetHandles = new List<string>();
+
+            // Create a transaction to access the objects
+            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+            {
+                foreach (SelectedObject so in ss)
+                {
+                    if (so.ObjectId == sourceId) continue; // Skip source
+
+                    Entity ent = tr.GetObject(so.ObjectId, OpenMode.ForRead) as Entity;
+                    if (!(ent is Polyline)) continue;
+
+                    targetHandles.Add(ent.Handle.ToString());
+                }
+
+                tr.Commit();
+            }
+
+            // Use command-based update for all targets
+            if (targetHandles.Count > 0)
+            {
+                // Store data for command
+                PendingCopyData = new CopyPropertyData
+                {
+                    SourceHandle = sourceId.Handle.ToString(),
+                    TargetHandles = targetHandles,
+                    ComponentType = copyParent ? componentType : null,
+                    Floor = copyParent ? floor : null,
+                    Elevation = copyParent ? elevation : null,
+                    Parts = copyChild ? sourceParts : null
+                };
+
+                // Execute copy command
+                doc.SendStringToExecute("EXECUTECOPY ", true, false, false);
+
+                ed.WriteMessage($"\nProperties copied to {targetHandles.Count} components.");
+            }
+            else
+            {
+                ed.WriteMessage("\nNo valid target components selected.");
+            }
+        }
+
 
         // Static palette set to maintain a single instance
         private static PaletteSet _paletteSet;
