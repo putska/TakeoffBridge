@@ -50,6 +50,7 @@ namespace TakeoffBridge
         private ObjectIdCollection lastSelection = new ObjectIdCollection();
 
         private void SelectionTimer_Tick(object sender, EventArgs e)
+        
         {
             try
             {

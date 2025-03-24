@@ -461,10 +461,9 @@ namespace TakeoffBridge
                             new TypedValue((int)DxfCode.ExtendedDataAsciiString, chunk)
                         );
                         pline.XData = rbChunk;
-                    }
-
+                    };
                     tr.Commit();
-
+                    MarkNumberManager.Instance.OnComponentCreated(plineId);
                     // Check if the object was created successfully
                     ed.WriteMessage($"\nMetal component created with handle: {pline.Handle}");
                     ed.WriteMessage($"\nLocation: ({pline.GetPoint2dAt(0).X}, {pline.GetPoint2dAt(0).Y}) to ({pline.GetPoint2dAt(1).X}, {pline.GetPoint2dAt(1).Y})");

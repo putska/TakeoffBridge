@@ -44,7 +44,8 @@ namespace TakeoffBridge
         {
             get
             {
-                if (_instance == null)
+                Document doc = Application.DocumentManager.MdiActiveDocument;
+                if (_instance == null || _instance._db != doc.Database)
                 {
                     _instance = new MarkNumberManager();
                 }
@@ -54,6 +55,7 @@ namespace TakeoffBridge
 
         #region Event Handlers
 
+        // Called when a new component is created
         // Called when a new component is created
         public void OnComponentCreated(ObjectId entityId)
         {
@@ -71,7 +73,7 @@ namespace TakeoffBridge
                         return;
                     }
 
-                    // Process the new component
+                    // Process the new component - pass the transaction
                     ProcessComponentMarkNumbers(entityId, tr);
 
                     // Add to processed set
@@ -82,20 +84,22 @@ namespace TakeoffBridge
         }
 
         // Called when a component is modified
+        // Called when a component is modified
         public void OnComponentModified(ObjectId entityId)
         {
             using (Transaction tr = _db.TransactionManager.StartTransaction())
             {
-                // Update this component and any connected components
+                // Update this component and any connected components - pass the transaction
                 ProcessComponentMarkNumbers(entityId, tr);
 
-                // Check if this modification affects any attachments
+                // Check if this modification affects any attachments - pass the transaction
                 UpdateAttachedComponents(entityId, tr);
 
                 tr.Commit();
             }
         }
 
+        // Called when a component is stretched (changing its length)
         // Called when a component is stretched (changing its length)
         public void OnComponentStretched(ObjectId entityId, double newLength)
         {
@@ -109,7 +113,7 @@ namespace TakeoffBridge
                     return;
                 }
 
-                string componentType = GetComponentType(ent);
+                string componentType = GetComponentType(ent, tr); // Pass transaction
                 if (string.IsNullOrEmpty(componentType))
                 {
                     tr.Commit();
@@ -117,7 +121,7 @@ namespace TakeoffBridge
                 }
 
                 // Get child parts
-                List<ChildPart> childParts = GetChildParts(ent);
+                List<ChildPart> childParts = GetChildParts(ent, tr); // Pass transaction
                 if (childParts.Count == 0)
                 {
                     tr.Commit();
@@ -134,7 +138,7 @@ namespace TakeoffBridge
                         continue;
 
                     // Calculate the old and new actual lengths
-                    double oldActualLength = CalculateActualPartLength(part, GetComponentLength(entityId));
+                    double oldActualLength = CalculateActualPartLength(part, GetComponentLength(entityId, tr)); // Pass transaction
                     double newActualLength = CalculateActualPartLength(part, newLength);
 
                     // If length changed significantly, update mark number
@@ -150,7 +154,7 @@ namespace TakeoffBridge
                         {
                             // For vertical components, we need attachment information
                             string handle = ent.Handle.ToString();
-                            var attachments = GetAttachmentsForComponent(handle, true);
+                            var attachments = GetAttachmentsForComponent(handle, true, tr); // Pass transaction
 
                             string uniqueKey = GenerateVerticalPartKey(part, newActualLength, attachments);
                             part.MarkNumber = GetOrCreateMarkNumber(uniqueKey, part.PartType, _verticalPartMarks);
@@ -165,13 +169,13 @@ namespace TakeoffBridge
                 {
                     Entity entForWrite = tr.GetObject(entityId, OpenMode.ForWrite) as Entity;
                     string json = JsonConvert.SerializeObject(childParts);
-                    SaveChildPartsToEntity(entForWrite, json);
+                    SaveChildPartsToEntity(entForWrite, json, tr);  // Pass transaction
                 }
 
                 // Check if this modification affects any attachments
                 if (componentType == "Horizontal")
                 {
-                    UpdateAttachedComponents(entityId, tr);
+                    UpdateAttachedComponents(entityId, tr);  // Pass transaction
                 }
 
                 tr.Commit();
@@ -263,7 +267,7 @@ namespace TakeoffBridge
                                             }
                                             else if (componentType == "Vertical")
                                             {
-                                                var attachments = GetAttachmentsForComponent(handle, true);
+                                                var attachments = GetAttachmentsForComponent(handle, true, tr);
                                                 string uniqueKey = GenerateVerticalPartKey(part, actualLength, attachments);
                                                 _verticalPartMarks[uniqueKey] = part.MarkNumber;
                                             }
@@ -286,6 +290,39 @@ namespace TakeoffBridge
                 $"\nLoaded {_horizontalPartMarks.Count} horizontal part marks and {_verticalPartMarks.Count} vertical part marks.");
         }
 
+        //private void RegisterXdataApps()
+        //{
+        //    using (Transaction tr = _db.TransactionManager.StartTransaction())
+        //    {
+        //        // Get the RegAppTable
+        //        RegAppTable regTable = (RegAppTable)tr.GetObject(_db.RegAppTableId, OpenMode.ForWrite);
+
+        //        // Register all the application names we might use
+        //        RegisterApp(regTable, "METALCOMP", tr);
+        //        RegisterApp(regTable, "METALPARTSINFO", tr);
+        //        RegisterApp(regTable, "METALPARTS", tr);
+
+        //        // Register chunk apps preemptively
+        //        for (int i = 0; i < 10; i++) // Assume we won't need more than 10 chunks
+        //        {
+        //            RegisterApp(regTable, $"METALPARTS{i}", tr);
+        //        }
+
+        //        tr.Commit();
+        //    }
+        //}
+
+        //private void RegisterApp(RegAppTable regTable, string appName, Transaction tr)
+        //{
+        //    if (!regTable.Has(appName))
+        //    {
+        //        RegAppTableRecord record = new RegAppTableRecord();
+        //        record.Name = appName;
+        //        regTable.Add(record);
+        //        tr.AddNewlyCreatedDBObject(record, true);
+        //    }
+        //}
+
         // Process mark numbers for a component - made internal for use by the commands
         internal void ProcessComponentMarkNumbers(ObjectId entityId, Transaction tr)
         {
@@ -293,11 +330,11 @@ namespace TakeoffBridge
             if (ent == null)
                 return;
 
-            string componentType = GetComponentType(ent);
+            string componentType = GetComponentType(ent, tr);
             if (string.IsNullOrEmpty(componentType))
                 return;
 
-            List<ChildPart> childParts = GetChildParts(ent);
+            List<ChildPart> childParts = GetChildParts(ent, tr);
             if (childParts.Count == 0)
                 return;
 
@@ -322,7 +359,7 @@ namespace TakeoffBridge
                 }
                 else if (componentType == "Vertical")
                 {
-                    var attachments = GetAttachmentsForComponent(handle, true);
+                    var attachments = GetAttachmentsForComponent(handle, true, tr);
                     string uniqueKey = GenerateVerticalPartKey(part, actualLength, attachments);
                     part.MarkNumber = GetOrCreateMarkNumber(uniqueKey, part.PartType, _verticalPartMarks);
                 }
@@ -330,15 +367,23 @@ namespace TakeoffBridge
                 markNumbersChanged = true;
             }
 
-            // Save updated child parts if mark numbers changed
-            if (markNumbersChanged)
-            {
-                Entity entForWrite = tr.GetObject(entityId, OpenMode.ForWrite) as Entity;
-                string json = JsonConvert.SerializeObject(childParts);
-                SaveChildPartsToEntity(entForWrite, json);
-            }
+
+                // Save updated child parts if mark numbers changed
+                if (markNumbersChanged)
+                {
+                    // Close the entity opened for read
+
+                    ent.Dispose();
+
+                    // Re-open the entity for write
+                    Entity entForWrite = tr.GetObject(entityId, OpenMode.ForWrite) as Entity;
+                    string json = JsonConvert.SerializeObject(childParts);
+                    SaveChildPartsToEntity(entForWrite, json, tr);
+                }
+
         }
 
+        // Update components that are attached to the given component
         // Update components that are attached to the given component
         private void UpdateAttachedComponents(ObjectId entityId, Transaction tr)
         {
@@ -349,7 +394,7 @@ namespace TakeoffBridge
             string handle = ent.Handle.ToString();
 
             // Get all attachments related to this component
-            var attachments = GetAttachmentsForComponent(handle, false);
+            var attachments = GetAttachmentsForComponent(handle, false, tr);  // Pass transaction
 
             if (attachments.Count > 0)
             {
@@ -359,7 +404,7 @@ namespace TakeoffBridge
                 foreach (var attachment in attachments)
                 {
                     // Find the vertical component
-                    ObjectId verticalId = GetEntityByHandle(attachment.VerticalHandle);
+                    ObjectId verticalId = GetEntityByHandle(attachment.VerticalHandle, ent.Database);  // Pass database
 
                     if (verticalId != ObjectId.Null && !verticalIds.Contains(verticalId))
                     {
@@ -370,7 +415,7 @@ namespace TakeoffBridge
                 // Process mark numbers for all affected vertical components
                 foreach (ObjectId verticalId in verticalIds)
                 {
-                    ProcessComponentMarkNumbers(verticalId, tr);
+                    ProcessComponentMarkNumbers(verticalId, tr);  // Pass transaction
                 }
             }
         }
@@ -439,9 +484,9 @@ namespace TakeoffBridge
         }
 
         // Get attachments for a component
-        private List<Attachment> GetAttachmentsForComponent(string handle, bool isVertical)
+        private List<Attachment> GetAttachmentsForComponent(string handle, bool isVertical, Transaction tr)
         {
-            List<Attachment> allAttachments = LoadAttachmentsFromDrawing();
+            List<Attachment> allAttachments = LoadAttachmentsFromDrawing(tr);
 
             if (isVertical)
             {
@@ -456,14 +501,14 @@ namespace TakeoffBridge
         }
 
         // Get an entity by its handle
-        private ObjectId GetEntityByHandle(string handle)
+        private ObjectId GetEntityByHandle(string handle, Database db)
         {
             ObjectId result = ObjectId.Null;
 
             try
             {
                 Handle h = new Handle(Convert.ToInt64(handle, 16));
-                result = _db.GetObjectId(false, h, 0);
+                result = db.GetObjectId(false, h, 0);
             }
             catch
             {
@@ -474,95 +519,139 @@ namespace TakeoffBridge
         }
 
         // Get the component type from an entity - made internal for use by commands
-        internal string GetComponentType(Entity ent)
+        internal string GetComponentType(Entity ent, Transaction tr = null)
         {
-            // Get component type from Xdata
-            using (ResultBuffer rb = ent.XData)
+            bool ownsTransaction = (tr == null);
+
+            try
             {
-                if (rb != null)
+                if (ownsTransaction)
                 {
-                    TypedValue[] tvs = rb.AsArray();
-                    foreach (TypedValue tv in tvs)
+                    tr = _db.TransactionManager.StartTransaction();
+                }
+
+                // Get component type from Xdata
+                ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
+                if (rbComp != null)
+                {
+                    TypedValue[] tvs = rbComp.AsArray();
+                    if (tvs.Length > 1 && tvs[1].TypeCode == (int)DxfCode.ExtendedDataAsciiString)
                     {
-                        if (tv.TypeCode == (int)DxfCode.ExtendedDataRegAppName)
+                        return tvs[1].Value.ToString();
+                    }
+                }
+
+                if (ownsTransaction)
+                {
+                    tr.Commit();
+                }
+
+                return null;
+            }
+            catch
+            {
+                if (ownsTransaction)
+                {
+                    tr.Abort();
+                }
+                throw;
+            }
+            finally
+            {
+                if (ownsTransaction && tr != null)
+                {
+                    tr.Dispose();
+                }
+            }
+        }
+
+        // Get child parts from an entity
+        private List<ChildPart> GetChildParts(Entity ent, Transaction tr = null)
+        {
+            bool ownsTransaction = (tr == null);
+            List<ChildPart> result = new List<ChildPart>();
+
+            try
+            {
+                if (ownsTransaction)
+                {
+                    tr = _db.TransactionManager.StartTransaction();
+                }
+
+                // Get info about parts chunks
+                int numChunks = 0;
+                ResultBuffer rbInfo = ent.GetXDataForApplication("METALPARTSINFO");
+                if (rbInfo != null)
+                {
+                    TypedValue[] infoValues = rbInfo.AsArray();
+                    foreach (TypedValue tv in infoValues)
+                    {
+                        if (tv.TypeCode == (int)DxfCode.ExtendedDataInteger32)
                         {
-                            if (tv.Value.ToString() == "METALCOMP")
+                            numChunks = Convert.ToInt32(tv.Value);
+                            break;
+                        }
+                    }
+                }
+
+                // Build JSON string from chunks if chunks exist
+                if (numChunks > 0)
+                {
+                    StringBuilder jsonBuilder = new StringBuilder();
+                    for (int i = 0; i < numChunks; i++)
+                    {
+                        string appName = $"METALPARTS{i}";
+                        ResultBuffer rbChunk = ent.GetXDataForApplication(appName);
+                        if (rbChunk != null)
+                        {
+                            TypedValue[] chunkValues = rbChunk.AsArray();
+                            foreach (TypedValue tv in chunkValues)
                             {
-                                // Next value should be the component type
-                                int index = Array.IndexOf(tvs, tv) + 1;
-                                if (index < tvs.Length && tvs[index].TypeCode == (int)DxfCode.ExtendedDataAsciiString)
+                                if (tv.TypeCode == (int)DxfCode.ExtendedDataAsciiString)
                                 {
-                                    return tvs[index].Value.ToString();
+                                    jsonBuilder.Append(tv.Value.ToString());
                                 }
                             }
                         }
                     }
-                }
-            }
 
-            return null;
-        }
-
-        // Get child parts from an entity
-        private List<ChildPart> GetChildParts(Entity ent)
-        {
-            // Get info about parts chunks
-            int numChunks = 0;
-            ResultBuffer rbInfo = ent.GetXDataForApplication("METALPARTSINFO");
-            if (rbInfo != null)
-            {
-                TypedValue[] infoValues = rbInfo.AsArray();
-                foreach (TypedValue tv in infoValues)
-                {
-                    if (tv.TypeCode == (int)DxfCode.ExtendedDataInteger32)
+                    // Parse the complete JSON
+                    if (jsonBuilder.Length > 0)
                     {
-                        numChunks = Convert.ToInt32(tv.Value);
-                        break;
-                    }
-                }
-            }
-
-            // No parts info found
-            if (numChunks == 0)
-            {
-                return new List<ChildPart>();
-            }
-
-            // Build JSON string from chunks
-            StringBuilder jsonBuilder = new StringBuilder();
-            for (int i = 0; i < numChunks; i++)
-            {
-                string appName = $"METALPARTS{i}";
-                ResultBuffer rbChunk = ent.GetXDataForApplication(appName);
-
-                if (rbChunk != null)
-                {
-                    TypedValue[] chunkValues = rbChunk.AsArray();
-                    foreach (TypedValue tv in chunkValues)
-                    {
-                        if (tv.TypeCode == (int)DxfCode.ExtendedDataAsciiString)
+                        try
                         {
-                            jsonBuilder.Append(tv.Value.ToString());
+                            result = JsonConvert.DeserializeObject<List<ChildPart>>(jsonBuilder.ToString());
+                        }
+                        catch (System.Exception ex)
+                        {
+                            Application.DocumentManager.MdiActiveDocument.Editor.WriteMessage(
+                                $"\nError parsing child parts JSON: {ex.Message}");
                         }
                     }
                 }
-            }
 
-            // Parse the complete JSON
-            if (jsonBuilder.Length > 0)
+                if (ownsTransaction)
+                {
+                    tr.Commit();
+                }
+
+                return result;
+            }
+            catch
             {
-                try
+                if (ownsTransaction)
                 {
-                    return JsonConvert.DeserializeObject<List<ChildPart>>(jsonBuilder.ToString());
+                    tr.Abort();
                 }
-                catch (System.Exception ex)
+                throw;
+            }
+            finally
+            {
+                if (ownsTransaction && tr != null)
                 {
-                    Application.DocumentManager.MdiActiveDocument.Editor.WriteMessage(
-                        $"\nError parsing child parts JSON: {ex.Message}");
+                    tr.Dispose();
                 }
             }
-
-            return new List<ChildPart>();
         }
 
         // Calculate actual part length
@@ -580,12 +669,19 @@ namespace TakeoffBridge
         }
 
         // Get component length
-        private double GetComponentLength(ObjectId entityId)
+        // Get component length
+        private double GetComponentLength(ObjectId entityId, Transaction tr = null)
         {
             double length = 0;
+            bool ownsTransaction = (tr == null);
 
-            using (Transaction tr = _db.TransactionManager.StartTransaction())
+            try
             {
+                if (ownsTransaction)
+                {
+                    tr = _db.TransactionManager.StartTransaction();
+                }
+
                 Entity ent = tr.GetObject(entityId, OpenMode.ForRead) as Entity;
                 if (ent is Polyline)
                 {
@@ -593,85 +689,104 @@ namespace TakeoffBridge
                     length = pline.Length;
                 }
 
-                tr.Commit();
+                if (ownsTransaction)
+                {
+                    tr.Commit();
+                }
+            }
+            catch
+            {
+                if (ownsTransaction)
+                {
+                    tr.Abort();
+                }
+                throw;
+            }
+            finally
+            {
+                if (ownsTransaction && tr != null)
+                {
+                    tr.Dispose();
+                }
             }
 
             return length;
         }
 
         // Save child parts to an entity
-        private void SaveChildPartsToEntity(Entity ent, string json)
+        private void SaveChildPartsToEntity(Entity ent, string json, Transaction tr)
         {
-            // Check if we need to chunk the JSON (AutoCAD limits Xdata to 16kb per application)
-            const int maxChunkSize = 1000; // Conservative value below AutoCAD's limit
+            // Register the app names first
+            RegAppTable regTable = (RegAppTable)tr.GetObject(ent.Database.RegAppTableId, OpenMode.ForWrite);
 
-            if (json.Length <= maxChunkSize)
+            // Register METALPARTSINFO app
+            RegisterApp(regTable, "METALPARTSINFO", tr);
+
+            // Calculate chunks and register chunk apps
+            const int maxChunkSize = 250;
+            int chunkCount = (int)Math.Ceiling((double)json.Length / maxChunkSize);
+
+            for (int i = 0; i < chunkCount; i++)
             {
-                // Single chunk - simple case
+                RegisterApp(regTable, $"METALPARTS{i}", tr);
+            }
+
+            // Write METALPARTSINFO with chunk count
+            using (ResultBuffer rbInfo = new ResultBuffer(
+                new TypedValue((int)DxfCode.ExtendedDataRegAppName, "METALPARTSINFO"),
+                new TypedValue((int)DxfCode.ExtendedDataInteger32, chunkCount)))
+            {
+                ent.XData = rbInfo;
+            }
+
+            // Write chunks
+            for (int i = 0; i < chunkCount; i++)
+            {
+                int startIndex = i * maxChunkSize;
+                int length = Math.Min(maxChunkSize, json.Length - startIndex);
+                string chunk = json.Substring(startIndex, length);
+
                 using (ResultBuffer rb = new ResultBuffer(
-                    new TypedValue((int)DxfCode.ExtendedDataRegAppName, "METALPARTS"),
-                    new TypedValue((int)DxfCode.ExtendedDataAsciiString, json)))
+                    new TypedValue((int)DxfCode.ExtendedDataRegAppName, $"METALPARTS{i}"),
+                    new TypedValue((int)DxfCode.ExtendedDataAsciiString, chunk)))
                 {
                     ent.XData = rb;
-                }
-            }
-            else
-            {
-                // Need to chunk the data
-                int chunkCount = (int)Math.Ceiling((double)json.Length / maxChunkSize);
-
-                for (int i = 0; i < chunkCount; i++)
-                {
-                    int startIndex = i * maxChunkSize;
-                    int length = Math.Min(maxChunkSize, json.Length - startIndex);
-                    string chunk = json.Substring(startIndex, length);
-
-                    string appName = (i == 0) ? "METALPARTS" : $"METALPARTS_{i}";
-
-                    using (ResultBuffer rb = new ResultBuffer(
-                        new TypedValue((int)DxfCode.ExtendedDataRegAppName, appName),
-                        new TypedValue((int)DxfCode.ExtendedDataAsciiString, chunk)))
-                    {
-                        ent.XData = rb;
-                    }
                 }
             }
         }
 
         // Load attachments from drawing
-        private List<Attachment> LoadAttachmentsFromDrawing()
+        private List<Attachment> LoadAttachmentsFromDrawing(Transaction tr)
         {
             List<Attachment> attachments = new List<Attachment>();
 
-            using (Transaction tr = _db.TransactionManager.StartTransaction())
+            // Use the stored database reference
+            Database db = _db;
+
+            // Get named objects dictionary
+            DBDictionary nod = (DBDictionary)tr.GetObject(db.NamedObjectsDictionaryId, OpenMode.ForRead);
+
+            // Check if entry exists
+            const string dictName = "METALATTACHMENTS";
+
+            if (nod.Contains(dictName))
             {
-                // Get named objects dictionary
-                DBDictionary nod = (DBDictionary)tr.GetObject(_db.NamedObjectsDictionaryId, OpenMode.ForRead);
-
-                // Check if entry exists
-                const string dictName = "METALATTACHMENTS";
-
-                if (nod.Contains(dictName))
+                DBObject obj = tr.GetObject(nod.GetAt(dictName), OpenMode.ForRead);
+                if (obj is Xrecord)
                 {
-                    DBObject obj = tr.GetObject(nod.GetAt(dictName), OpenMode.ForRead);
-                    if (obj is Xrecord)
-                    {
-                        Xrecord xrec = obj as Xrecord;
-                        ResultBuffer rb = xrec.Data;
+                    Xrecord xrec = obj as Xrecord;
+                    ResultBuffer rb = xrec.Data;
 
-                        if (rb != null)
+                    if (rb != null)
+                    {
+                        TypedValue[] values = rb.AsArray();
+                        if (values.Length > 0 && values[0].TypeCode == (int)DxfCode.Text)
                         {
-                            TypedValue[] values = rb.AsArray();
-                            if (values.Length > 0 && values[0].TypeCode == (int)DxfCode.Text)
-                            {
-                                string json = values[0].Value.ToString();
-                                attachments = JsonConvert.DeserializeObject<List<Attachment>>(json);
-                            }
+                            string json = values[0].Value.ToString();
+                            attachments = JsonConvert.DeserializeObject<List<Attachment>>(json);
                         }
                     }
                 }
-
-                tr.Commit();
             }
 
             return attachments;
@@ -753,7 +868,7 @@ namespace TakeoffBridge
                                     {
                                         Entity entForWrite = tr.GetObject(id, OpenMode.ForWrite) as Entity;
                                         string json = JsonConvert.SerializeObject(childParts);
-                                        manager.SaveChildPartsToEntity(entForWrite, json);
+                                        manager.SaveChildPartsToEntity(entForWrite, json, tr);
                                     }
                                 }
                             }
@@ -778,6 +893,7 @@ namespace TakeoffBridge
         public static void GenerateAllMarkNumbers()
         {
             Editor ed = Application.DocumentManager.MdiActiveDocument.Editor;
+            Database db = Application.DocumentManager.MdiActiveDocument.Database;
 
             try
             {
@@ -785,13 +901,30 @@ namespace TakeoffBridge
 
                 MarkNumberManager manager = Instance;
 
-                // Process all metal components in the drawing
-                using (Transaction tr = Application.DocumentManager.MdiActiveDocument.Database.TransactionManager.StartTransaction())
+                // First register all apps in a separate transaction
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    RegAppTable regTable = (RegAppTable)tr.GetObject(db.RegAppTableId, OpenMode.ForWrite);
+
+                    // Register apps
+                    RegisterApp(regTable, "METALCOMP", tr);
+                    RegisterApp(regTable, "METALPARTSINFO", tr);
+
+                    for (int i = 0; i < 10; i++)
+                    {
+                        RegisterApp(regTable, $"METALPARTS{i}", tr);
+                    }
+
+                    tr.Commit();
+                }
+
+                // First process horizontal components
+                using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
                     // Get all polylines in the drawing
                     TypedValue[] tvs = new TypedValue[] {
-                        new TypedValue((int)DxfCode.Start, "LWPOLYLINE")
-                    };
+                new TypedValue((int)DxfCode.Start, "LWPOLYLINE")
+            };
 
                     SelectionFilter filter = new SelectionFilter(tvs);
                     PromptSelectionResult selRes = ed.SelectAll(filter);
@@ -800,7 +933,6 @@ namespace TakeoffBridge
                     {
                         SelectionSet ss = selRes.Value;
 
-                        // First process all horizontal components
                         foreach (SelectedObject selObj in ss)
                         {
                             ObjectId id = selObj.ObjectId;
@@ -808,7 +940,7 @@ namespace TakeoffBridge
 
                             if (ent != null)
                             {
-                                string componentType = manager.GetComponentType(ent);
+                                string componentType = manager.GetComponentType(ent, tr);
 
                                 if (componentType == "Horizontal")
                                 {
@@ -816,8 +948,26 @@ namespace TakeoffBridge
                                 }
                             }
                         }
+                    }
 
-                        // Then process all vertical components
+                    tr.Commit();
+                }
+
+                // Then process vertical components
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    // Get all polylines in the drawing
+                    TypedValue[] tvs = new TypedValue[] {
+                new TypedValue((int)DxfCode.Start, "LWPOLYLINE")
+            };
+
+                    SelectionFilter filter = new SelectionFilter(tvs);
+                    PromptSelectionResult selRes = ed.SelectAll(filter);
+
+                    if (selRes.Status == PromptStatus.OK)
+                    {
+                        SelectionSet ss = selRes.Value;
+
                         foreach (SelectedObject selObj in ss)
                         {
                             ObjectId id = selObj.ObjectId;
@@ -825,7 +975,7 @@ namespace TakeoffBridge
 
                             if (ent != null)
                             {
-                                string componentType = manager.GetComponentType(ent);
+                                string componentType = manager.GetComponentType(ent, tr);
 
                                 if (componentType == "Vertical")
                                 {
@@ -842,7 +992,19 @@ namespace TakeoffBridge
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage("\nError: " + ex.Message);
+                ed.WriteMessage($"\nError: {ex.Message}");
+                ed.WriteMessage($"\nStack trace: {ex.StackTrace}");
+            }
+        }
+
+        private static void RegisterApp(RegAppTable regTable, string appName, Transaction tr)
+        {
+            if (!regTable.Has(appName))
+            {
+                RegAppTableRecord record = new RegAppTableRecord();
+                record.Name = appName;
+                regTable.Add(record);
+                tr.AddNewlyCreatedDBObject(record, true);
             }
         }
 

@@ -10,6 +10,7 @@ using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
 using Autodesk.AutoCAD.Runtime;
 using Newtonsoft.Json;
+using TakeoffBridge;
 
 // This line is necessary to tell AutoCAD to load your plugin
 [assembly: ExtensionApplication(typeof(GlassTakeoffBridge.GlassTakeoffApp))]
@@ -78,6 +79,20 @@ namespace GlassTakeoffBridge
         public void Terminate()
         {
             // Called when AutoCAD unloads the plugin
+            if (Application.DocumentManager != null)
+            {
+                Application.DocumentManager.DocumentCreated -= DocumentManager_DocumentCreated;
+                Application.DocumentManager.DocumentActivated -= DocumentManager_DocumentActivated;
+
+                // Also unsubscribe from database events
+                Document doc = Application.DocumentManager.MdiActiveDocument;
+                if (doc != null && doc.Database != null)
+                {
+                    doc.Database.ObjectModified -= Database_ObjectModified;
+                    doc.Database.ObjectAppended -= Database_ObjectAppended;
+                    doc.Database.ObjectErased -= Database_ObjectErased;
+                }
+            }
         }
 
         private void SetupDocumentEvents()
@@ -135,32 +150,27 @@ namespace GlassTakeoffBridge
             {
                 Document doc = Application.DocumentManager.MdiActiveDocument;
                 Database db = doc.Database;
-
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
                     DBObject obj = tr.GetObject(e.DBObject.ObjectId, OpenMode.ForRead);
-
                     // Check if this is a metal component
                     if (obj is Entity)
                     {
                         Entity ent = obj as Entity;
-
                         // Check if it has METALCOMP Xdata
                         ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
                         if (rbComp != null)
                         {
                             // Store the ObjectId to process later
                             ObjectId idToProcess = e.DBObject.ObjectId;
-
                             // Use the Idle event to process after transaction completes
                             Application.Idle += delegate
                             {
                                 Application.Idle -= delegate { };  // Remove the handler
-                                MarkNumberManager.OnComponentCreated(idToProcess);
+                                MarkNumberManager.Instance.OnComponentCreated(idToProcess);
                             };
                         }
                     }
-
                     tr.Commit();
                 }
             }
@@ -179,49 +189,73 @@ namespace GlassTakeoffBridge
                 Document doc = Application.DocumentManager.MdiActiveDocument;
                 Database db = doc.Database;
 
-                using (Transaction tr = db.TransactionManager.StartTransaction())
+                // Store the ID to process later
+                ObjectId idToProcess = e.DBObject.ObjectId;
+
+                Application.Idle += delegate
                 {
-                    DBObject obj = tr.GetObject(e.DBObject.ObjectId, OpenMode.ForRead);
+                    Application.Idle -= delegate { };  // Remove the handler
 
-                    // Check if this is a metal component
-                    if (obj is Entity)
+                    try
                     {
-                        Entity ent = obj as Entity;
-
-                        // Check if it has METALCOMP Xdata
-                        ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
-                        if (rbComp != null)
+                        using (Transaction tr = db.TransactionManager.StartTransaction())
                         {
-                            // Store the ObjectId to process later
-                            ObjectId idToProcess = e.DBObject.ObjectId;
-
-                            // Check if it's a stretch operation (by checking if length changed)
-                            if (ent is Polyline)
+                            // First check if object still exists and is not erased
+                            if (!idToProcess.IsValid || idToProcess.IsErased)
                             {
-                                Polyline pline = ent as Polyline;
-                                double newLength = pline.Length;
+                                System.Diagnostics.Debug.WriteLine("Object was erased before processing");
+                                tr.Commit();
+                                return;
+                            }
 
-                                // Use the Idle event to process after transaction completes
-                                Application.Idle += delegate
-                                {
-                                    Application.Idle -= delegate { };  // Remove the handler
-                                    MarkNumberManager.OnComponentStretched(idToProcess, newLength);
-                                };
-                            }
-                            else
+                            // Try to open the object
+                            DBObject obj;
+                            try
                             {
-                                // General modification
-                                Application.Idle += delegate
-                                {
-                                    Application.Idle -= delegate { };  // Remove the handler
-                                    MarkNumberManager.OnComponentModified(idToProcess);
-                                };
+                                obj = tr.GetObject(idToProcess, OpenMode.ForRead);
                             }
+                            catch
+                            {
+                                System.Diagnostics.Debug.WriteLine("Failed to open object - may have been erased");
+                                tr.Commit();
+                                return;
+                            }
+
+                            // Check if this is a metal component
+                            if (obj is Entity)
+                            {
+                                Entity ent = obj as Entity;
+
+                                // Check if it has METALCOMP Xdata
+                                ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
+                                if (rbComp != null)
+                                {
+                                    // Get the manager and process the component
+                                    MarkNumberManager manager = GlassTakeoffBridge.GlassTakeoffApp.MarkNumberManager;
+
+                                    if (ent is Polyline)
+                                    {
+                                        // It's a stretch operation
+                                        Polyline pline = ent as Polyline;
+                                        double newLength = pline.Length;
+                                        manager.OnComponentStretched(idToProcess, newLength);
+                                    }
+                                    else
+                                    {
+                                        // General modification
+                                        manager.OnComponentModified(idToProcess);
+                                    }
+                                }
+                            }
+
+                            tr.Commit();
                         }
                     }
-
-                    tr.Commit();
-                }
+                    catch (System.Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Error processing modified object: {ex.Message}");
+                    }
+                };
             }
             catch (System.Exception ex)
             {
