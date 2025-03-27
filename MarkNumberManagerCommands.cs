@@ -27,6 +27,30 @@ namespace TakeoffBridge
             MarkNumberManager.RegenerateAllMarkNumbers();
         }
 
+        // Add this command class if it doesn't exist
+        [CommandMethod("FORCEPROCESS")]
+        public void ForceProcessCommand()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+
+            // Prompt for component selection
+            PromptEntityOptions options = new PromptEntityOptions("\nSelect component to force process: ");
+            options.SetRejectMessage("\nMust select a polyline");
+            options.AddAllowedClass(typeof(Polyline), false);
+
+            PromptEntityResult result = ed.GetEntity(options);
+            if (result.Status == PromptStatus.OK)
+            {
+                // Force process the selected component
+                MarkNumberManager.ForceProcess(result.ObjectId);
+
+                ed.WriteMessage("\nComponent processed. Check output window for details.");
+            }
+        }
+
+
+
         [CommandMethod("MARKNUMBERREPORT")]
         public void GenerateMarkNumberReport()
         {

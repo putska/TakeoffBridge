@@ -578,6 +578,7 @@ namespace TakeoffBridge
                     }
 
                     tr.Commit();
+                    MarkNumberManager.Instance.OnComponentModified(objId); ;
                 }
                 catch
                 {

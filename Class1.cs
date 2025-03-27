@@ -61,19 +61,44 @@ namespace GlassTakeoffBridge
             }
         }
 
+        // Keep a static reference to your panel for access from commands
+        private static EnhancedMetalComponentPanel _panel;
+
+        public static EnhancedMetalComponentPanel Panel
+        {
+            get { return _panel; }
+        }
+
         public void Initialize()
         {
-            // Called when AutoCAD loads the plugin
-            Document doc = Application.DocumentManager.MdiActiveDocument;
-            doc.Editor.WriteMessage("\nGlass Takeoff Bridge loaded successfully.");
+            try
+            {
+                // Called when AutoCAD loads the plugin
+                Document doc = Application.DocumentManager.MdiActiveDocument;
+                if (doc != null)
+                {
+                    doc.Editor.WriteMessage("\nMetal Component Takeoff plugin loaded successfully.");
+                }
 
-            // Initialize the mark number manager
-            _markNumberManager = TakeoffBridge.MarkNumberManager.Instance;
+                // Initialize the mark number manager
+                _markNumberManager = TakeoffBridge.MarkNumberManager.Instance;
 
-            // Subscribe to AutoCAD events
-            SetupDocumentEvents();
+                // Subscribe to AutoCAD events
+                SetupDocumentEvents();
 
-            doc.Editor.WriteMessage("\nMark Number Manager initialized successfully.");
+                // Register reactor for document creation events
+                Application.DocumentManager.DocumentCreated += DocumentManager_DocumentCreated;
+                Application.DocumentManager.DocumentActivated += DocumentManager_DocumentActivated;
+
+                if (doc != null)
+                {
+                    doc.Editor.WriteMessage("\nMark Number Manager initialized successfully.");
+                }
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error in Initialize: {ex.Message}");
+            }
         }
 
         public void Terminate()
@@ -88,8 +113,8 @@ namespace GlassTakeoffBridge
                 Document doc = Application.DocumentManager.MdiActiveDocument;
                 if (doc != null && doc.Database != null)
                 {
-                    doc.Database.ObjectModified -= Database_ObjectModified;
-                    doc.Database.ObjectAppended -= Database_ObjectAppended;
+                    //doc.Database.ObjectModified -= Database_ObjectModified;
+                    //doc.Database.ObjectAppended -= Database_ObjectAppended;
                     doc.Database.ObjectErased -= Database_ObjectErased;
                 }
             }
@@ -97,14 +122,17 @@ namespace GlassTakeoffBridge
 
         private void SetupDocumentEvents()
         {
-            // Subscribe to document events
-            Application.DocumentManager.DocumentCreated += DocumentManager_DocumentCreated;
-            Application.DocumentManager.DocumentActivated += DocumentManager_DocumentActivated;
-
-            // Set up the current document's events
-            if (Application.DocumentManager.MdiActiveDocument != null)
+            try
             {
-                SetupCurrentDocumentEvents();
+                // Set up the current document's events
+                if (Application.DocumentManager.MdiActiveDocument != null)
+                {
+                    SetupCurrentDocumentEvents();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error in SetupDocumentEvents: {ex.Message}");
             }
         }
 
@@ -128,154 +156,298 @@ namespace GlassTakeoffBridge
 
         private void SetupCurrentDocumentEvents()
         {
-            Document doc = Application.DocumentManager.MdiActiveDocument;
-            if (doc != null)
-            {
-                // Hook into the document events that we need for mark number management
-                Database db = doc.Database;
-
-                // ObjectModified events can be used to detect when entities are modified
-                db.ObjectModified += Database_ObjectModified;
-
-                // You might also want to handle these events
-                db.ObjectAppended += Database_ObjectAppended;
-                db.ObjectErased += Database_ObjectErased;
-            }
-        }
-
-        private void Database_ObjectAppended(object sender, ObjectEventArgs e)
-        {
-            // When a new object is added to the drawing
             try
             {
                 Document doc = Application.DocumentManager.MdiActiveDocument;
-                Database db = doc.Database;
-                using (Transaction tr = db.TransactionManager.StartTransaction())
+                if (doc != null)
                 {
-                    DBObject obj = tr.GetObject(e.DBObject.ObjectId, OpenMode.ForRead);
-                    // Check if this is a metal component
-                    if (obj is Entity)
-                    {
-                        Entity ent = obj as Entity;
-                        // Check if it has METALCOMP Xdata
-                        ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
-                        if (rbComp != null)
-                        {
-                            // Store the ObjectId to process later
-                            ObjectId idToProcess = e.DBObject.ObjectId;
-                            // Use the Idle event to process after transaction completes
-                            Application.Idle += delegate
-                            {
-                                Application.Idle -= delegate { };  // Remove the handler
-                                MarkNumberManager.Instance.OnComponentCreated(idToProcess);
-                            };
-                        }
-                    }
-                    tr.Commit();
+                    // Unsubscribe from any existing events first to avoid duplicates
+                    Database db = doc.Database;
+                    //db.ObjectModified -= Database_ObjectModified;
+                    //db.ObjectAppended -= Database_ObjectAppended;
+                    db.ObjectErased -= Database_ObjectErased;
+
+                    // Now hook into the document events
+                    //db.ObjectModified += Database_ObjectModified;
+                    //db.ObjectAppended += Database_ObjectAppended;
+                    db.ObjectErased += Database_ObjectErased;
+
+                    System.Diagnostics.Debug.WriteLine($"Set up events for database: {db.Filename}");
                 }
             }
             catch (System.Exception ex)
             {
-                // Log error but don't crash
-                System.Diagnostics.Debug.WriteLine($"Error in ObjectAppended: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Error in SetupCurrentDocumentEvents: {ex.Message}");
             }
         }
 
-        private void Database_ObjectModified(object sender, ObjectEventArgs e)
+        //private void Database_ObjectAppended(object sender, ObjectEventArgs e)
+        //{
+        //    // When a new object is added to the drawing
+        //    try
+        //    {
+        //        // Check if this database is the current document's database
+        //        Document doc = Application.DocumentManager.MdiActiveDocument;
+        //        if (doc == null) return;
+
+        //        Database eventDb = sender as Database;
+        //        Database activeDb = doc.Database;
+
+        //        // If the event is coming from a different document/database, ignore it
+        //        if (eventDb != activeDb)
+        //        {
+        //            return;
+        //        }
+
+        //        using (Transaction tr = activeDb.TransactionManager.StartTransaction())
+        //        {
+        //            if (!e.DBObject.ObjectId.IsValid || e.DBObject.ObjectId.IsErased)
+        //            {
+        //                tr.Commit();
+        //                return;
+        //            }
+
+        //            DBObject obj;
+        //            try
+        //            {
+        //                obj = tr.GetObject(e.DBObject.ObjectId, OpenMode.ForRead);
+        //            }
+        //            catch (Autodesk.AutoCAD.Runtime.Exception acEx)
+        //            {
+        //                if (acEx.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.NotFromThisDocument)
+        //                {
+        //                    System.Diagnostics.Debug.WriteLine("Object not from this document - ignoring");
+        //                }
+        //                tr.Commit();
+        //                return;
+        //            }
+
+        //            // Check if this is a metal component
+        //            if (obj is Entity)
+        //            {
+        //                Entity ent = obj as Entity;
+        //                // Check if it has METALCOMP Xdata
+        //                ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
+        //                if (rbComp != null)
+        //                {
+        //                    // Store the ObjectId to process later
+        //                    ObjectId idToProcess = e.DBObject.ObjectId;
+        //                    // Use the Idle event to process after transaction completes
+        //                    Application.Idle += delegate
+        //                    {
+        //                        Application.Idle -= delegate { };  // Remove the handler
+
+        //                        // Check if the active document is still the same
+        //                        Document currentDoc = Application.DocumentManager.MdiActiveDocument;
+        //                        if (currentDoc == null || currentDoc.Database != eventDb)
+        //                        {
+        //                            return; // Document changed, don't process
+        //                        }
+
+        //                        // Process the component
+        //                        MarkNumberManager.Instance.OnComponentCreated(idToProcess);
+
+        //                        // Notify the UI
+        //                        NotifyPanelsOfComponentChange(idToProcess);
+        //                    };
+        //                }
+        //            }
+        //            tr.Commit();
+        //        }
+        //    }
+        //    catch (System.Exception ex)
+        //    {
+        //        // Log error but don't crash
+        //        System.Diagnostics.Debug.WriteLine($"Error in ObjectAppended: {ex.Message}");
+        //    }
+        //}
+
+        //private void Database_ObjectModified(object sender, ObjectEventArgs e)
+        //{
+        //    // When an object is modified in the drawing
+        //    try
+        //    {
+        //        // Check if this database is the current document's database
+        //        Document doc = Application.DocumentManager.MdiActiveDocument;
+        //        if (doc == null) return;
+
+        //        Database eventDb = sender as Database;
+        //        Database activeDb = doc.Database;
+
+        //        // If the event is coming from a different document/database, ignore it
+        //        if (eventDb != activeDb)
+        //        {
+        //            return;
+        //        }
+
+        //        // Store the ID to process later
+        //        ObjectId idToProcess = e.DBObject.ObjectId;
+
+        //        // Use Idle event to ensure we process after the transaction completes
+        //        Application.Idle += delegate
+        //        {
+        //            Application.Idle -= delegate { }; // Remove the handler
+
+        //            try
+        //            {
+        //                // Check if the active document is still the same
+        //                Document currentDoc = Application.DocumentManager.MdiActiveDocument;
+        //                if (currentDoc == null || currentDoc.Database != eventDb)
+        //                {
+        //                    return; // Document changed, don't process
+        //                }
+
+        //                using (Transaction tr = eventDb.TransactionManager.StartTransaction())
+        //                {
+        //                    // Skip if object is no longer valid
+        //                    if (!idToProcess.IsValid || idToProcess.IsErased)
+        //                    {
+        //                        System.Diagnostics.Debug.WriteLine("Object was erased before processing");
+        //                        tr.Commit();
+        //                        return;
+        //                    }
+
+        //                    // Try to open the object
+        //                    DBObject obj;
+        //                    try
+        //                    {
+        //                        obj = tr.GetObject(idToProcess, OpenMode.ForRead);
+        //                    }
+        //                    catch (Autodesk.AutoCAD.Runtime.Exception acEx)
+        //                    {
+        //                        // Handle specific AutoCAD exceptions
+        //                        if (acEx.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.NotFromThisDocument)
+        //                        {
+        //                            System.Diagnostics.Debug.WriteLine("Object not from this document - ignoring");
+        //                        }
+        //                        else
+        //                        {
+        //                            System.Diagnostics.Debug.WriteLine($"Failed to open object: {acEx.Message}");
+        //                        }
+        //                        tr.Commit();
+        //                        return;
+        //                    }
+        //                    catch
+        //                    {
+        //                        System.Diagnostics.Debug.WriteLine("Failed to open object - may have been erased");
+        //                        tr.Commit();
+        //                        return;
+        //                    }
+
+        //                    // Check if this is a metal component
+        //                    if (obj is Entity)
+        //                    {
+        //                        Entity ent = obj as Entity;
+
+        //                        // Check if it has METALCOMP Xdata
+        //                        ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
+        //                        if (rbComp != null)
+        //                        {
+        //                            // Get the manager and process the component
+        //                            MarkNumberManager manager = MarkNumberManager;
+
+        //                            if (ent is Polyline)
+        //                            {
+        //                                Polyline pline = ent as Polyline;
+        //                                double newLength = pline.Length;
+        //                                manager.OnComponentStretched(idToProcess, newLength);
+        //                            }
+        //                            else
+        //                            {
+        //                                manager.OnComponentModified(idToProcess);
+        //                            }
+
+        //                            // Notify any open panels of the change
+        //                            NotifyPanelsOfComponentChange(idToProcess);
+        //                        }
+        //                    }
+
+        //                    tr.Commit();
+        //                }
+        //            }
+        //            catch (System.Exception ex)
+        //            {
+        //                System.Diagnostics.Debug.WriteLine($"Error processing modified object: {ex.Message}");
+        //            }
+        //        };
+        //    }
+        //    catch (System.Exception ex)
+        //    {
+        //        // Log error but don't crash
+        //        System.Diagnostics.Debug.WriteLine($"Error in ObjectModified: {ex.Message}");
+        //    }
+        //}
+
+        // Add a method to notify panels of component changes
+        private void NotifyPanelsOfComponentChange(ObjectId componentId)
         {
-            // When an object is modified in the drawing
             try
             {
-                Document doc = Application.DocumentManager.MdiActiveDocument;
-                Database db = doc.Database;
-
-                // Store the ID to process later
-                ObjectId idToProcess = e.DBObject.ObjectId;
-
-                Application.Idle += delegate
+                // If the panel exists and is visible
+                if (_panel != null)
                 {
-                    Application.Idle -= delegate { };  // Remove the handler
-
-                    try
-                    {
-                        using (Transaction tr = db.TransactionManager.StartTransaction())
-                        {
-                            // First check if object still exists and is not erased
-                            if (!idToProcess.IsValid || idToProcess.IsErased)
-                            {
-                                System.Diagnostics.Debug.WriteLine("Object was erased before processing");
-                                tr.Commit();
-                                return;
-                            }
-
-                            // Try to open the object
-                            DBObject obj;
-                            try
-                            {
-                                obj = tr.GetObject(idToProcess, OpenMode.ForRead);
-                            }
-                            catch
-                            {
-                                System.Diagnostics.Debug.WriteLine("Failed to open object - may have been erased");
-                                tr.Commit();
-                                return;
-                            }
-
-                            // Check if this is a metal component
-                            if (obj is Entity)
-                            {
-                                Entity ent = obj as Entity;
-
-                                // Check if it has METALCOMP Xdata
-                                ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
-                                if (rbComp != null)
-                                {
-                                    // Get the manager and process the component
-                                    MarkNumberManager manager = GlassTakeoffBridge.GlassTakeoffApp.MarkNumberManager;
-
-                                    if (ent is Polyline)
-                                    {
-                                        // It's a stretch operation
-                                        Polyline pline = ent as Polyline;
-                                        double newLength = pline.Length;
-                                        manager.OnComponentStretched(idToProcess, newLength);
-                                    }
-                                    else
-                                    {
-                                        // General modification
-                                        manager.OnComponentModified(idToProcess);
-                                    }
-                                }
-                            }
-
-                            tr.Commit();
-                        }
-                    }
-                    catch (System.Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"Error processing modified object: {ex.Message}");
-                    }
-                };
+                    // Call a new method on the panel to notify of changes
+                    _panel.OnComponentChanged(componentId);
+                }
             }
             catch (System.Exception ex)
             {
-                // Log error but don't crash
-                System.Diagnostics.Debug.WriteLine($"Error in ObjectModified: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Error notifying panel of component change: {ex.Message}");
             }
         }
 
         private void Database_ObjectErased(object sender, ObjectErasedEventArgs e)
         {
             // When an object is erased from the drawing
-            // This can be used to clean up references when objects are deleted
-            if (!e.Erased)
+            if (e.Erased)
             {
-                // Object is being deleted
                 try
                 {
+                    // Check if this database is the current document's database
+                    Document doc = Application.DocumentManager.MdiActiveDocument;
+                    if (doc == null) return;
+
+                    Database eventDb = sender as Database;
+                    Database activeDb = doc.Database;
+
+                    // If the event is coming from a different document/database, ignore it
+                    if (eventDb != activeDb)
+                    {
+                        return;
+                    }
+
+                    ObjectId erasedId = e.DBObject.ObjectId;
+
                     // You could potentially clean up references or perform other actions
                     // when metal components are deleted
-                    System.Diagnostics.Debug.WriteLine($"Object {e.DBObject.ObjectId} erased");
+                    System.Diagnostics.Debug.WriteLine($"Object {erasedId} erased");
+
+                    // If it's a metal component being erased, notify the UI
+                    Application.Idle += delegate
+                    {
+                        Application.Idle -= delegate { };  // Remove the handler
+
+                        try
+                        {
+                            // Check if the active document is still the same
+                            Document currentDoc = Application.DocumentManager.MdiActiveDocument;
+                            if (currentDoc == null || currentDoc.Database != eventDb)
+                            {
+                                return; // Document changed, don't process
+                            }
+
+                            // Check if the panel is showing this component
+                            if (_panel != null)
+                            {
+                                // Refresh the panel if it's showing the erased object
+                                _panel.OnComponentErased(erasedId);
+                            }
+                        }
+                        catch (System.Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"Error handling erased notification: {ex.Message}");
+                        }
+                    };
                 }
                 catch (System.Exception ex)
                 {
@@ -283,6 +455,8 @@ namespace GlassTakeoffBridge
                 }
             }
         }
+
+
     }
 
     // Commands available in AutoCAD

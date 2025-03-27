@@ -2,6 +2,7 @@
 using System.Drawing;
 using System.Windows.Forms;
 using Autodesk.AutoCAD.Runtime;
+using Application = Autodesk.AutoCAD.ApplicationServices.Application;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
@@ -13,6 +14,7 @@ using System.Linq;
 
 namespace TakeoffBridge
 {
+
     public class EnhancedMetalComponentPanel : System.Windows.Forms.UserControl, IDisposable
     {
         private ListView partsList;
@@ -26,7 +28,6 @@ namespace TakeoffBridge
         private Button btnSave;
         private Label lblLength;
         private Panel visualPanel; // New visual panel for part representation
-        private System.Windows.Forms.Timer selectionTimer;
         private ObjectId currentComponentId;
         private List<ChildPart> currentParts = new List<ChildPart>();
         private double currentComponentLength = 0.0;
@@ -35,122 +36,283 @@ namespace TakeoffBridge
         private Panel attachmentPanel; // New visualization panel for attachments
         private bool forceRefreshOnNextSelection = false;
         private bool hasUnsavedChanges = false;
+        private Document currentDocument;
+        private Editor currentEditor;
+        private bool isEventHandlerAttached = false;
+        private bool isProcessingUpdate = false;
+        // If you want to add a status label
+        private Label statusLabel;
 
         public EnhancedMetalComponentPanel()
         {
             InitializeComponent();
 
-            // Set up a timer to check selection changes
-            selectionTimer = new System.Windows.Forms.Timer();
-            selectionTimer.Interval = 500; // Check every half second
-            selectionTimer.Tick += SelectionTimer_Tick;
-            selectionTimer.Start();
+            // Connect to AutoCAD events instead of using a timer
+            ConnectToDocumentEvents();
         }
 
         private ObjectIdCollection lastSelection = new ObjectIdCollection();
 
-        private void SelectionTimer_Tick(object sender, EventArgs e)
-        
+        private void ConnectToDocumentEvents()
         {
             try
             {
-                Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+                // Get the current document
+                Document doc = Application.DocumentManager.MdiActiveDocument;
                 if (doc == null) return;
 
-                // Get the current selection
-                Editor ed = doc.Editor;
-                PromptSelectionResult selRes = ed.SelectImplied();
+                // Track the current document
+                currentDocument = doc;
+                currentEditor = doc.Editor;
 
-                // Check if selection has changed
-                bool selectionChanged = false;
+                // Subscribe to document events for selection changes
+                doc.ImpliedSelectionChanged += Document_ImpliedSelectionChanged;
 
-                // Check if we went from having something selected to nothing selected
-                bool hadSelectionBefore = lastSelection.Count > 0;
-                bool hasSelectionNow = selRes.Status == PromptStatus.OK && selRes.Value.Count > 0;
+                // Subscribe to document switch events
+                Application.DocumentManager.DocumentActivated += DocumentManager_DocumentActivated;
 
-                // If selection is about to change and we have unsaved changes, save them
-                if ((selectionChanged || !hasSelectionNow) && hasUnsavedChanges && currentComponentId != ObjectId.Null)
+                // Connect to command events
+                ConnectToCommandEvents();
+
+                isEventHandlerAttached = true;
+
+                System.Diagnostics.Debug.WriteLine("Connected to AutoCAD document events");
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error connecting to document events: {ex.Message}");
+            }
+        }
+
+        private void DisconnectFromDocumentEvents()
+        {
+            try
+            {
+                if (currentDocument != null)
                 {
-                    // Save any pending changes before changing selection
+                    currentDocument.ImpliedSelectionChanged -= Document_ImpliedSelectionChanged;
+                }
+
+                Application.DocumentManager.DocumentActivated -= DocumentManager_DocumentActivated;
+
+                // Disconnect from command events
+                DisconnectFromCommandEvents();
+
+                isEventHandlerAttached = false;
+                System.Diagnostics.Debug.WriteLine("Disconnected from AutoCAD document events");
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error disconnecting from document events: {ex.Message}");
+            }
+        }
+
+        // Rename the method from Editor_ImpliedSelectionChanged to Document_ImpliedSelectionChanged
+        private void Document_ImpliedSelectionChanged(object sender, EventArgs e)
+        {
+            try
+            {
+                if (currentEditor == null || currentDocument == null) return;
+
+                // Check for unsaved changes before loading a new component
+                if (hasUnsavedChanges && currentComponentId != ObjectId.Null)
+                {
                     SaveChanges();
                 }
 
-                if (!hasSelectionNow)
+                // Get the current selection
+                PromptSelectionResult selRes = currentEditor.SelectImplied();
+
+                if (selRes.Status == PromptStatus.OK && selRes.Value.Count == 1)
                 {
-                    // Nothing selected - make sure UI is cleared
-                    if (currentComponentId != ObjectId.Null)
-                    {
-                        ClearComponentData();
-                        // Add debug message to confirm clearing happened
-                        System.Diagnostics.Debug.WriteLine("Selection cleared - UI should be reset");
-                    }
-                    // Clear the last selection
-                    lastSelection.Clear();
-                    return;
+                    ObjectId objId = selRes.Value[0].ObjectId;
+                    LoadComponentData(objId);
                 }
-
-                if (selRes.Status == PromptStatus.OK)
+                else
                 {
-                    // Force refresh if flag is set or if we previously had nothing selected
-                    if (forceRefreshOnNextSelection || !hadSelectionBefore)
-                    {
-                        selectionChanged = true;
-                        forceRefreshOnNextSelection = false; // Reset the flag
-                    }
-                    else
-                    {
-                        // Compare with last selection
-                        if (selRes.Value.Count != lastSelection.Count)
-                        {
-                            selectionChanged = true;
-                        }
-                        else
-                        {
-                            for (int i = 0; i < selRes.Value.Count; i++)
-                            {
-                                if (!lastSelection.Contains(selRes.Value[i].ObjectId))
-                                {
-                                    selectionChanged = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    // Update last selection
-                    lastSelection.Clear();
-                    foreach (SelectedObject selObj in selRes.Value)
-                    {
-                        lastSelection.Add(selObj.ObjectId);
-                    }
-                }
-
-                // If selection changed, update the panel
-                if (selectionChanged)
-                {
-                    // Check for unsaved changes before loading a new component
-                    if (hasUnsavedChanges && currentComponentId != ObjectId.Null)
-                    {
-                        SaveChanges();
-                    }
-
-                    if (selRes.Status == PromptStatus.OK && selRes.Value.Count == 1)
-                    {
-                        ObjectId objId = selRes.Value[0].ObjectId;
-                        LoadComponentData(objId);
-                    }
-                    else
-                    {
-                        // Clear the panel
-                        ClearComponentData();
-                    }
+                    // Clear the panel
+                    ClearComponentData();
                 }
             }
             catch (System.Exception ex)
             {
                 // Log the error but don't crash
-                System.Diagnostics.Debug.WriteLine($"Error in selection timer: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Error handling selection change: {ex.Message}");
             }
+        }
+
+        private void DocumentManager_DocumentActivated(object sender, DocumentCollectionEventArgs e)
+        {
+            // Disconnect from old document
+            DisconnectFromDocumentEvents();
+
+            // Connect to new document
+            ConnectToDocumentEvents();
+
+            // Clear component data when switching documents
+            ClearComponentData();
+        }
+
+        private void Editor_ImpliedSelectionChanged(object sender, EventArgs e)
+        {
+            try
+            {
+                // Check for unsaved changes before loading a new component
+                if (hasUnsavedChanges && currentComponentId != ObjectId.Null)
+                {
+                    SaveChanges();
+                }
+
+                // Get the current selection
+                PromptSelectionResult selRes = currentEditor.SelectImplied();
+
+                if (selRes.Status == PromptStatus.OK && selRes.Value.Count == 1)
+                {
+                    ObjectId objId = selRes.Value[0].ObjectId;
+                    LoadComponentData(objId);
+                }
+                else
+                {
+                    // Clear the panel
+                    ClearComponentData();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                // Log the error but don't crash
+                System.Diagnostics.Debug.WriteLine($"Error handling selection change: {ex.Message}");
+            }
+        }
+
+        private void ConnectToCommandEvents()
+        {
+            try
+            {
+                if (currentDocument != null)
+                {
+                    // Subscribe to command events
+                    currentDocument.CommandWillStart += Document_CommandWillStart;
+                    currentDocument.CommandEnded += Document_CommandEnded;
+
+                    System.Diagnostics.Debug.WriteLine("Connected to command events");
+                }
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error connecting to command events: {ex.Message}");
+            }
+        }
+
+        private void DisconnectFromCommandEvents()
+        {
+            try
+            {
+                if (currentDocument != null)
+                {
+                    // Unsubscribe from command events
+                    currentDocument.CommandWillStart -= Document_CommandWillStart;
+                    currentDocument.CommandEnded -= Document_CommandEnded;
+                }
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error disconnecting from command events: {ex.Message}");
+            }
+        }
+
+        private void Document_CommandWillStart(object sender, CommandEventArgs e)
+        {
+            // Handle command start - may want to temporarily disable UI
+            System.Diagnostics.Debug.WriteLine($"Command starting: {e.GlobalCommandName}");
+
+            // Check if command might modify our component
+            if (e.GlobalCommandName == "ERASE" ||
+                e.GlobalCommandName == "MOVE" ||
+                e.GlobalCommandName == "STRETCH" ||
+                e.GlobalCommandName == "TRIM" ||
+                e.GlobalCommandName == "EXTEND")
+            {
+                // Save any unsaved changes before the command executes
+                if (hasUnsavedChanges && currentComponentId != ObjectId.Null)
+                {
+                    SaveChanges();
+                }
+            }
+        }
+
+        private void Document_CommandEnded(object sender, CommandEventArgs e)
+        {
+            // Handle command end - refresh the component data if needed
+            System.Diagnostics.Debug.WriteLine($"Command ended: {e.GlobalCommandName}");
+
+            // Force refresh after commands that might modify components
+            if (e.GlobalCommandName == "UPDATEMETAL" ||
+                e.GlobalCommandName == "UPDATEPARENT" ||
+                e.GlobalCommandName == "EXECUTECOPY" ||
+                e.GlobalCommandName == "DETECTATTACHMENTS")
+            {
+                // Refresh the component data if we have an active selection
+                if (currentComponentId != ObjectId.Null)
+                {
+                    try
+                    {
+                        // Verify the object still exists before trying to load it
+                        using (Transaction tr = currentDocument.Database.TransactionManager.StartTransaction())
+                        {
+                            if (currentComponentId.IsValid && !currentComponentId.IsErased)
+                            {
+                                LoadComponentData(currentComponentId);
+                            }
+                            else
+                            {
+                                ClearComponentData();
+                            }
+                            tr.Commit();
+                        }
+                    }
+                    catch
+                    {
+                        ClearComponentData();
+                    }
+                }
+            }
+        }
+
+        // Add this method to handle external notifications of component changes
+        public void OnComponentChanged(ObjectId componentId)
+        {
+            // Only process if this is the component we're currently showing
+            if (componentId == currentComponentId)
+            {
+                // Reload the component data
+                LoadComponentData(componentId);
+
+                // Refresh the visualizations
+                visualPanel.Invalidate();
+                attachmentPanel.Invalidate();
+            }
+        }
+
+        // Add a method to show processing status
+        private void SetProcessingStatus(bool isProcessing, string message = "")
+        {
+            isProcessingUpdate = isProcessing;
+
+            // You might want to add a status label to your UI
+            if (statusLabel != null)
+            {
+                statusLabel.Text = message;
+                statusLabel.Visible = !string.IsNullOrEmpty(message);
+            }
+
+            // Optionally change cursor
+            this.Cursor = isProcessing ? Cursors.WaitCursor : Cursors.Default;
+
+            // Disable controls during processing
+            SetControlsEnabled(!isProcessing && currentComponentId != ObjectId.Null);
+
+            // Force UI to update
+            System.Windows.Forms.Application.DoEvents();
         }
 
 
@@ -351,6 +513,19 @@ namespace TakeoffBridge
 
             // Initially disable buttons until something is selected
             SetControlsEnabled(false);
+
+            statusLabel = new Label
+            {
+                Text = "",
+                Left = 10,
+                Top = 950, // Adjust based on your layout
+                Width = 580,
+                Height = 20,
+                TextAlign = ContentAlignment.MiddleLeft,
+                BorderStyle = BorderStyle.None,
+                Visible = false
+            };
+            this.Controls.Add(statusLabel);
         }
 
         private void VisualPanel_Paint(object sender, PaintEventArgs e)
@@ -584,12 +759,22 @@ namespace TakeoffBridge
 
         private void LoadComponentData(ObjectId objId)
         {
-            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
-            Database db = doc.Database;
+            SetProcessingStatus(true, "Loading component data...");
 
-            using (Transaction tr = db.TransactionManager.StartTransaction())
+            try
             {
-                Entity ent = tr.GetObject(objId, OpenMode.ForRead) as Entity;
+                Document doc = Application.DocumentManager.MdiActiveDocument;
+                if (doc == null)
+                {
+                    ClearComponentData();
+                    return;
+                }
+
+                Database db = doc.Database;
+
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    Entity ent = tr.GetObject(objId, OpenMode.ForRead) as Entity;
                 if (ent is Polyline)
                 {
                     Polyline pline = ent as Polyline;
@@ -740,8 +925,16 @@ namespace TakeoffBridge
                 tr.Commit();
             }
 
-            // Clear data if no valid component found
-            ClearComponentData();
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error loading component data: {ex.Message}");
+                ClearComponentData();
+            }
+            finally
+            {
+                SetProcessingStatus(false);
+            }
         }
 
         private List<Attachment> LoadAttachmentsFromDrawing()
@@ -1110,9 +1303,21 @@ namespace TakeoffBridge
             }
         }
 
+        // Add this method to the EnhancedMetalComponentPanel class
+        public void OnComponentErased(ObjectId erasedId)
+        {
+            if (currentComponentId == erasedId)
+            {
+                // Clear the panel since the displayed component was erased
+                ClearComponentData();
+            }
+        }
+
         private void SaveChanges()
         {
             if (!hasUnsavedChanges || currentComponentId == ObjectId.Null) return;
+
+            SetProcessingStatus(true, "Saving changes...");
 
             try
             {
@@ -1176,11 +1381,28 @@ namespace TakeoffBridge
 
                 // Log successful save
                 System.Diagnostics.Debug.WriteLine("Changes automatically saved.");
+                hasUnsavedChanges = false;
             }
             catch (System.Exception ex)
             {
                 MessageBox.Show($"Error auto-saving changes: {ex.Message}", "Save Error");
             }
+            finally
+            {
+                SetProcessingStatus(false);
+            }
+        }
+
+        // Add this at the end of the class
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                // Disconnect from all events
+                DisconnectFromDocumentEvents();
+            }
+
+            base.Dispose(disposing);
         }
 
         private void BtnSaveParent_Click(object sender, EventArgs e)
