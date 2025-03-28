@@ -8,6 +8,8 @@ using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Windows;
 using System.Linq;
 using System.Net.Mail;
+using System.Linq.Expressions;
+using Newtonsoft.Json;
 
 // This file contains our custom MetalComponent entity definition
 
@@ -463,7 +465,11 @@ namespace TakeoffBridge
                         pline.XData = rbChunk;
                     };
                     tr.Commit();
-                    MarkNumberManager.Instance.OnComponentCreated(plineId);
+                    using (Transaction trx = doc.Database.TransactionManager.StartTransaction())
+                    {
+                        MarkNumberManager.Instance.ProcessComponentMarkNumbers(plineId, trx, forceProcess: true);
+                        trx.Commit();
+                    }
                     // Check if the object was created successfully
                     ed.WriteMessage($"\nMetal component created with handle: {pline.Handle}");
                     ed.WriteMessage($"\nLocation: ({pline.GetPoint2dAt(0).X}, {pline.GetPoint2dAt(0).Y}) to ({pline.GetPoint2dAt(1).X}, {pline.GetPoint2dAt(1).Y})");
@@ -493,7 +499,7 @@ namespace TakeoffBridge
         [CommandMethod("UPDATEMETAL")]
         public void UpdateMetalCommand()
         {
-            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
 
             try
@@ -505,12 +511,38 @@ namespace TakeoffBridge
                     return;
                 }
 
+                // Store the handle before it gets cleared
+                string handle = PendingHandle;
+
                 // Process the update
                 UpdateMetalXdata(PendingHandle, PendingParts);
 
                 // Clear the pending data
                 PendingHandle = null;
                 PendingParts = null;
+
+                // Now process mark numbers after the update
+                try
+                {
+                    using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+                    {
+                        // Convert handle to ObjectId
+                        long longHandle = Convert.ToInt64(handle, 16);
+                        Handle h = new Handle(longHandle);
+                        ObjectId objId = doc.Database.GetObjectId(false, h, 0);
+
+                        // Process mark numbers
+                        MarkNumberManager.Instance.ProcessComponentMarkNumbers(objId, tr, forceProcess: true);
+
+                        tr.Commit();
+                    }
+
+                    ed.WriteMessage("\nMark numbers processed successfully.");
+                }
+                catch (System.Exception ex)
+                {
+                    ed.WriteMessage($"\nError processing mark numbers: {ex.Message}");
+                }
 
                 ed.WriteMessage("\nMetal part updated successfully.");
             }
@@ -519,6 +551,7 @@ namespace TakeoffBridge
                 ed.WriteMessage($"\nError in UPDATEMETAL: {ex.Message}");
             }
         }
+
 
         // Method to update the Xdata
         private void UpdateMetalXdata(string handle, List<ChildPart> parts)
@@ -578,7 +611,11 @@ namespace TakeoffBridge
                     }
 
                     tr.Commit();
-                    MarkNumberManager.Instance.OnComponentModified(objId); ;
+                    using (Transaction trx = doc.Database.TransactionManager.StartTransaction())
+                    {
+                        MarkNumberManager.Instance.ProcessComponentMarkNumbers(objId, trx);
+                        trx.Commit();
+                    }
                 }
                 catch
                 {
@@ -588,106 +625,6 @@ namespace TakeoffBridge
             }
         }
 
-
-        private Point3d CalculateAdjustedPointForPart(Point3d startPoint, Point3d endPoint, ChildPart part, string orientation)
-        {
-            // For horizontal components
-            if (orientation.ToUpper() == "HORIZONTAL")
-            {
-                // Get the direction vector
-                Vector3d direction = endPoint - startPoint;
-                // Alternative approach if GetNormalized() is not available:
-                double length = direction.Length;
-                if (length > 0)
-                {
-                     direction = direction / length;
-                 }
-
-                // Calculate the adjusted start point (accounting for StartAdjustment)
-                Point3d adjustedStartPoint = startPoint + (direction * part.StartAdjustment);
-
-                // Calculate the adjusted end point (accounting for EndAdjustment)
-                Point3d adjustedEndPoint = endPoint - (direction * part.EndAdjustment);
-
-                // Return the appropriate point based on the part's attachment side
-                if (part.Attach == "L")
-                {
-                    return adjustedStartPoint;
-                }
-                else if (part.Attach == "R")
-                {
-                    return adjustedEndPoint;
-                }
-                else
-                {
-                    // If no specific side, return the midpoint
-                    return new Point3d(
-                        (adjustedStartPoint.X + adjustedEndPoint.X) / 2,
-                        (adjustedStartPoint.Y + adjustedEndPoint.Y) / 2,
-                        (adjustedStartPoint.Z + adjustedEndPoint.Z) / 2
-                    );
-                }
-            }
-            // For vertical components
-            else if (orientation.ToUpper() == "VERTICAL")
-            {
-                // For vertical components, assume Y is up/down
-                // Determine which point is bottom and which is top
-                Point3d bottomPoint, topPoint;
-                if (startPoint.Y < endPoint.Y)
-                {
-                    bottomPoint = startPoint;
-                    topPoint = endPoint;
-                }
-                else
-                {
-                    bottomPoint = endPoint;
-                    topPoint = startPoint;
-                }
-
-                // Get the direction vector
-                Vector3d direction = topPoint - bottomPoint;
-                double length = direction.Length;
-                if (length > 0)
-                {
-                    direction = direction / length;
-                }
-
-                // Calculate the adjusted bottom point (accounting for StartAdjustment)
-                Point3d adjustedBottomPoint = bottomPoint + (direction * part.StartAdjustment);
-
-                // Calculate the adjusted top point (accounting for EndAdjustment)
-                Point3d adjustedTopPoint = topPoint - (direction * part.EndAdjustment);
-
-                // Return the appropriate point based on the clips property
-                if (part.Clips)
-                {
-                    // For parts with clips, you may want to return the whole adjusted line segment
-                    // But for now, let's return the midpoint as an example
-                    return new Point3d(
-                        (adjustedBottomPoint.X + adjustedTopPoint.X) / 2,
-                        (adjustedBottomPoint.Y + adjustedTopPoint.Y) / 2,
-                        (adjustedBottomPoint.Z + adjustedTopPoint.Z) / 2
-                    );
-                }
-                else
-                {
-                    // For parts without clips, return the midpoint as default
-                    return new Point3d(
-                        (adjustedBottomPoint.X + adjustedTopPoint.X) / 2,
-                        (adjustedBottomPoint.Y + adjustedTopPoint.Y) / 2,
-                        (adjustedBottomPoint.Z + adjustedTopPoint.Z) / 2
-                    );
-                }
-            }
-
-            // Default case - return the midpoint of the original line
-            return new Point3d(
-                (startPoint.X + endPoint.X) / 2,
-                (startPoint.Y + endPoint.Y) / 2,
-                (startPoint.Z + endPoint.Z) / 2
-            );
-        }
 
         // Modified method for detecting attachments
         [CommandMethod("DETECTATTACHMENTS")]
@@ -901,6 +838,27 @@ namespace TakeoffBridge
                 SaveAttachmentsToDrawing(attachments);
 
                 ed.WriteMessage($"\nDetected {attachments.Count} attachments with end-specific adjustments");
+
+                // NEW CODE: Refresh mark numbers after detecting attachments
+                ed.WriteMessage("\nUpdating mark numbers based on new attachments...");
+
+                // Create an instance of the MarkNumberDisplayCommands to call RefreshAllMarkNumbers
+                MarkNumberDisplayCommands markNumberCommands = new MarkNumberDisplayCommands();
+
+                // Use reflection to call the private method
+                Type commandsType = typeof(MarkNumberDisplayCommands);
+                System.Reflection.MethodInfo refreshMethod = commandsType.GetMethod("RefreshAllMarkNumbers",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+                if (refreshMethod != null)
+                {
+                    refreshMethod.Invoke(markNumberCommands, null);
+                }
+
+                // Update the display of mark numbers
+                MarkNumberDisplay.Instance.UpdateAllMarkNumbers();
+
+                ed.WriteMessage("\nMark numbers updated successfully.");
             }
             catch (System.Exception ex)
             {
@@ -1084,9 +1042,10 @@ namespace TakeoffBridge
         private void SaveAttachmentsToDrawing(List<Attachment> attachments)
         {
             // Serialize attachments to JSON
-            string json = Newtonsoft.Json.JsonConvert.SerializeObject(attachments);
+            string json = JsonConvert.SerializeObject(attachments);
+            System.Diagnostics.Debug.WriteLine($"Saving {attachments.Count} attachments to drawing");
 
-            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            Document doc = Application.DocumentManager.MdiActiveDocument;
             Database db = doc.Database;
 
             using (Transaction tr = db.TransactionManager.StartTransaction())
@@ -1106,6 +1065,7 @@ namespace TakeoffBridge
                         Xrecord xrec = obj as Xrecord;
                         ResultBuffer rb = new ResultBuffer(new TypedValue((int)DxfCode.Text, json));
                         xrec.Data = rb;
+                        System.Diagnostics.Debug.WriteLine("Updated existing METALATTACHMENTS record");
                     }
                 }
                 else
@@ -1117,6 +1077,7 @@ namespace TakeoffBridge
 
                     nod.SetAt(dictName, xrec);
                     tr.AddNewlyCreatedDBObject(xrec, true);
+                    System.Diagnostics.Debug.WriteLine("Created new METALATTACHMENTS record");
                 }
 
                 tr.Commit();
@@ -1433,6 +1394,10 @@ namespace TakeoffBridge
                 // Show the palette set
                 _paletteSet.Visible = true;
                 ed.WriteMessage("\nPalette set shown successfully.");
+
+                // Start the stretch monitor
+                ed.WriteMessage("\nStarting Stretch Monitor...");
+                doc.SendStringToExecute("STRETCHMONITOR ", true, false, false);
             }
             catch (System.Exception ex)
             {

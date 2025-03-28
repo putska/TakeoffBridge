@@ -10,6 +10,7 @@ using Autodesk.AutoCAD.Geometry;
 using System.Collections.Generic;
 using System.Net.Mail;
 using System.Linq;
+using Newtonsoft.Json;
 
 
 namespace TakeoffBridge
@@ -38,6 +39,7 @@ namespace TakeoffBridge
         private bool hasUnsavedChanges = false;
         private Document currentDocument;
         private Editor currentEditor;
+        private bool _handlingSelectionChange = false;
         private bool isEventHandlerAttached = false;
         private bool isProcessingUpdate = false;
         // If you want to add a status label
@@ -110,8 +112,14 @@ namespace TakeoffBridge
         // Rename the method from Editor_ImpliedSelectionChanged to Document_ImpliedSelectionChanged
         private void Document_ImpliedSelectionChanged(object sender, EventArgs e)
         {
+            // Prevent recursive calls
+            if (_handlingSelectionChange) return;
+
             try
             {
+
+                _handlingSelectionChange = true;
+
                 if (currentEditor == null || currentDocument == null) return;
 
                 // Check for unsaved changes before loading a new component
@@ -138,6 +146,10 @@ namespace TakeoffBridge
             {
                 // Log the error but don't crash
                 System.Diagnostics.Debug.WriteLine($"Error handling selection change: {ex.Message}");
+            }
+            finally
+            {
+                _handlingSelectionChange = false;
             }
         }
 
@@ -809,7 +821,17 @@ namespace TakeoffBridge
                                 currentAttachments = allAttachments.Where(a => a.VerticalHandle == handleString).ToList();
 
                                 System.Diagnostics.Debug.WriteLine($"Loaded {currentAttachments.Count} attachments for vertical {handleString}");
-                            }
+
+                                    // Explicitly force a repaint of the attachment panel
+                                    if (attachmentPanel != null)
+                                    {
+                                        // Use BeginInvoke to ensure this happens after the current method completes
+                                        this.BeginInvoke(new Action(() => {
+                                            attachmentPanel.Invalidate();
+                                            System.Diagnostics.Debug.WriteLine("Explicitly invalidated attachment panel");
+                                        }));
+                                    }
+                                }
                             catch (System.Exception ex)
                             {
                                 System.Diagnostics.Debug.WriteLine($"Error loading attachments: {ex.Message}");
@@ -908,11 +930,12 @@ namespace TakeoffBridge
                             // Update parts list
                             UpdatePartsList();
 
-                            // Update visualization
-                            visualPanel.Invalidate();
-
-                            // also update attachment visualization
-                            attachmentPanel.Invalidate();
+                            if (forceRefreshOnNextSelection)
+                            {
+                                visualPanel.Invalidate();
+                                attachmentPanel.Invalidate();
+                                forceRefreshOnNextSelection = false;
+                            }
 
                             SetControlsEnabled(true);
                         }));
@@ -941,7 +964,7 @@ namespace TakeoffBridge
         {
             List<Attachment> attachments = new List<Attachment>();
 
-            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            Document doc = Application.DocumentManager.MdiActiveDocument;
             Database db = doc.Database;
 
             using (Transaction tr = db.TransactionManager.StartTransaction())
@@ -966,10 +989,22 @@ namespace TakeoffBridge
                             if (values.Length > 0 && values[0].TypeCode == (int)DxfCode.Text)
                             {
                                 string json = values[0].Value.ToString();
-                                attachments = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Attachment>>(json);
+                                try
+                                {
+                                    attachments = JsonConvert.DeserializeObject<List<Attachment>>(json);
+                                    System.Diagnostics.Debug.WriteLine($"Loaded {attachments.Count} total attachments from drawing");
+                                }
+                                catch (System.Exception ex)
+                                {
+                                    System.Diagnostics.Debug.WriteLine($"Error deserializing attachments: {ex.Message}");
+                                }
                             }
                         }
                     }
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("No METALATTACHMENTS dictionary found in drawing");
                 }
 
                 tr.Commit();
@@ -987,6 +1022,7 @@ namespace TakeoffBridge
                 e.Graphics.DrawString("No attachments for this component", this.Font, Brushes.Gray, 10, 10);
                 return;
             }
+
 
             Graphics g = e.Graphics;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
@@ -1468,7 +1504,7 @@ namespace TakeoffBridge
             ListViewItem item = partsList.SelectedItems[0];
             ChildPart part = item.Tag as ChildPart;
 
-            using (PartEditForm form = new PartEditForm(part))
+            using (PartEditForm form = new PartEditForm(part, currentComponentId))
             {
                 if (form.ShowDialog() == DialogResult.OK)
                 {
@@ -1683,14 +1719,19 @@ namespace TakeoffBridge
         // The part being edited (if any)
         private ChildPart partToEdit;
 
+        private ObjectId _componentId;
+
         // Result part after editing
         public ChildPart ResultPart { get; private set; }
 
         // Constructor - accept an optional part to edit
-        public PartEditForm(ChildPart part = null)
+        public PartEditForm(ChildPart part = null, ObjectId componentId = default)
         {
             // Store the part being edited
             this.partToEdit = part;
+
+            // Store the component ID
+            this._componentId = componentId;
 
             // Initialize the form components
             InitializeComponent();
@@ -1983,6 +2024,17 @@ namespace TakeoffBridge
                 ResultPart.IsShopUse = chkShopUse.Checked;
                 ResultPart.Finish = txtFinish.Text;
                 ResultPart.Fab = txtFab.Text;
+
+                // Process mark numbers if we have a valid component ID
+                if (_componentId != ObjectId.Null && _componentId.IsValid)
+                {
+                    Document doc = Application.DocumentManager.MdiActiveDocument;
+                    using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+                    {
+                        MarkNumberManager.Instance.ProcessComponentMarkNumbers(_componentId, tr);
+                        tr.Commit();
+                    }
+                }
             }
             catch (System.Exception ex)
             {
