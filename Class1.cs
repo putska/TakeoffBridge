@@ -18,6 +18,7 @@ using TakeoffBridge;
 [assembly: CommandClass(typeof(TakeoffBridge.MetalComponentCommands))]
 [assembly: CommandClass(typeof(TakeoffBridge.MarkNumberManagerCommands))]
 [assembly: CommandClass(typeof(TakeoffBridge.MarkNumberDisplayCommands))]
+[assembly: CommandClass(typeof(TakeoffBridge.ElevationManagerCommands))]
 
 namespace GlassTakeoffBridge
 {
@@ -46,24 +47,7 @@ namespace GlassTakeoffBridge
     // Main application class
     public class GlassTakeoffApp : IExtensionApplication
     {
-        // Static reference to our mark number display
-        //private static TakeoffBridge.MarkNumberDisplay _markNumberDisplay;
-
-
-        // Public property to access the manager from other classes
-        //public static TakeoffBridge.MarkNumberDisplay MarkNumberDisplay
-        //{
-        //    get
-        //    {
-        //        if (_markNumberDisplay == null)
-        //        {
-        //            _markNumberDisplay = TakeoffBridge.MarkNumberDisplay.Instance;
-        //        }
-        //        return _markNumberDisplay;
-        //    }
-        //}
-
-
+        
         // Static reference to our mark number manager
         private static TakeoffBridge.MarkNumberManager _markNumberManager;
 

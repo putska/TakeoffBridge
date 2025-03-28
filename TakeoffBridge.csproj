@@ -74,6 +74,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Class1.cs" />
+    <Compile Include="ElevationManager.cs" />
     <Compile Include="MarkNumberDisplay.cs" />
     <Compile Include="MarkNumberDisplayCommands.cs" />
     <Compile Include="MarkNumberManager.cs" />
