@@ -74,7 +74,11 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Class1.cs" />
+    <Compile Include="Drawfab.cs" />
+    <Compile Include="DrawFabCommands.cs" />
     <Compile Include="ElevationManager.cs" />
+    <Compile Include="FabricationTicketCommands.cs" />
+    <Compile Include="FabricationTicketGenerator.cs" />
     <Compile Include="MarkNumberDisplay.cs" />
     <Compile Include="MarkNumberDisplayCommands.cs" />
     <Compile Include="MarkNumberManager.cs" />
@@ -83,7 +87,10 @@
     <Compile Include="MetalComponentPanel.cs">
       <SubType>UserControl</SubType>
     </Compile>
+    <Compile Include="PartDrawingGenerator.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="TemplateGenerator.cs" />
+    <Compile Include="TemplateGeneratorCommands.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

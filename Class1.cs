@@ -19,6 +19,8 @@ using TakeoffBridge;
 [assembly: CommandClass(typeof(TakeoffBridge.MarkNumberManagerCommands))]
 [assembly: CommandClass(typeof(TakeoffBridge.MarkNumberDisplayCommands))]
 [assembly: CommandClass(typeof(TakeoffBridge.ElevationManagerCommands))]
+[assembly: CommandClass(typeof(TakeoffBridge.TemplateGeneratorCommands))]
+[assembly: CommandClass(typeof(TakeoffBridge.DrawfabCommands))]
 
 namespace GlassTakeoffBridge
 {
