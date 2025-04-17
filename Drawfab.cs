@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.ApplicationServices.Core;
 using Autodesk.AutoCAD.Colors;
 using Autodesk.AutoCAD.DatabaseServices;
@@ -13,10 +14,12 @@ namespace TakeoffBridge
 {
     public class Drawfab
     {
-        private const string WorkPointAppName = "WORKPOINT";
+        private const string WorkPointAppName = "WP";
         private double _width;
         private double _height;
         private string _partNumber;
+        private Document _document;
+        private bool _ownsDocument;
 
         public Drawfab()
         {
@@ -30,9 +33,30 @@ namespace TakeoffBridge
             _partNumber = partNumber;
         }
 
+        // New overloaded constructor (accepts explicit document)
+        public Drawfab(string partNumber, Document document)
+        {
+            _partNumber = partNumber;
+            _document = document;
+            _ownsDocument = false;
+        }
+
         public double Width => _width;
         public double Height => _height;
         public string PartNumber => _partNumber;
+
+        // Then in your methods, check which approach to use:
+        private Document GetDocument()
+        {
+            if (_document != null)
+            {
+                return _document;
+            }
+            else
+            {
+                return Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            }
+        }
 
         /// <summary>
         /// Imports a drawing file as a block in the current database
@@ -86,10 +110,10 @@ namespace TakeoffBridge
         /// <summary>
         /// Sets a workpoint on an entity
         /// </summary>
-        private void SetWorkPoint(Point3d workPoint, Transaction trans, Entity entity)
+        private void SetWorkPoint(Point3d workPoint, Database database, Transaction trans, Entity entity)
         {
             // Register application name if needed
-            RegisterAppName(trans, WorkPointAppName);
+            RegisterAppName(trans, database, WorkPointAppName);
 
             // Set XData with workpoint
             entity.XData = new ResultBuffer(
@@ -101,9 +125,11 @@ namespace TakeoffBridge
         /// <summary>
         /// Registers an application name for XData if not already registered
         /// </summary>
-        private void RegisterAppName(Transaction trans, string appName)
+        private void RegisterAppName(Transaction trans, Database database, string appName)
         {
-            Database db = Application.DocumentManager.MdiActiveDocument.Database;
+
+            Database db = database;
+
             using (RegAppTable regTable = (RegAppTable)trans.GetObject(db.RegAppTableId, OpenMode.ForRead))
             {
                 if (!regTable.Has(appName))
@@ -306,13 +332,25 @@ namespace TakeoffBridge
                     foreach (Region region in finalRegions)
                     {
                         // Register application name if needed
-                        RegisterAppName(trans, WorkPointAppName);
+                        RegisterAppName(trans, database,  WorkPointAppName);
 
                         // Set XData with workpoint
-                        region.XData = new ResultBuffer(
-                            new TypedValue((int)DxfCode.ExtendedDataRegAppName, WorkPointAppName),
-                            new TypedValue((int)DxfCode.ExtendedDataWorldXCoordinate, workPoint.Value)
-                        );
+                        try
+                        {
+                            region.XData = new ResultBuffer(
+                                new TypedValue((int)DxfCode.ExtendedDataRegAppName, WorkPointAppName),
+                                new TypedValue((int)DxfCode.ExtendedDataWorldXCoordinate, workPoint.Value)
+                            );
+                        }
+                        catch (Autodesk.AutoCAD.Runtime.Exception ex)
+                        {
+                            if (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.RegisteredApplicationIdNotFound)
+                            {
+                                // Just log and continue
+                                System.Diagnostics.Debug.WriteLine($"Ignoring RegAppIdNotFound: {ex.Message}");
+                            }
+                            else throw; // Re-throw any other errors
+                        }
                     }
                 }
 
@@ -345,9 +383,15 @@ namespace TakeoffBridge
             _width = extents.MaxPoint.X - extents.MinPoint.X;
             _height = extents.MaxPoint.Y - extents.MinPoint.Y;
 
-            // Move to origin
-            var transformation = Matrix3d.Displacement(Point3d.Origin -
-                new Point3d(extents.MinPoint.X, extents.MinPoint.Y, extents.MinPoint.Z));
+            // Modified: Move to origin with vertical centering
+            // Create the displacement vector correctly
+            Vector3d displacementVector = new Vector3d(
+                -extents.MinPoint.X,
+                -(extents.MinPoint.Y + extents.MaxPoint.Y) / 2, // Center vertically
+                -extents.MinPoint.Z);
+
+            // Apply displacement
+            var transformation = Matrix3d.Displacement(displacementVector);
 
             if (!preserveOriginalOrientation)
             {
@@ -380,9 +424,10 @@ namespace TakeoffBridge
         /// </summary>
         private List<Solid3d> ExtrudeRegions(List<Region> regions, double extrusionLength, Database database, Transaction trans, bool preserveOriginalOrientation = false)
         {
+
             var solids = new List<Solid3d>();
             var sweepOpts = new SweepOptions();
-            Editor ed = Application.DocumentManager.MdiActiveDocument.Editor;
+            Editor ed = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
 
             try
             {
@@ -409,7 +454,7 @@ namespace TakeoffBridge
                         Point3d? workPoint = GetWorkPoint(region);
                         if (workPoint.HasValue)
                         {
-                            SetWorkPoint(workPoint.Value, trans, solid);
+                            SetWorkPoint(workPoint.Value, database, trans, solid);
                         }
 
                         solids.Add(solid);
@@ -447,7 +492,9 @@ namespace TakeoffBridge
                                    double miterRight, double tiltRight, double length,
                                    bool preserveOriginalOrientation = false, bool visualizeOnly = false)
         {
-            Editor ed = Application.DocumentManager.MdiActiveDocument.Editor;
+            Document doc = GetDocument();
+            Database db = doc.Database;
+            Editor ed = doc.Editor;
             ed.WriteMessage($"\nApplying cuts - Left: {miterLeft}°/{tiltLeft}°, Right: {miterRight}°/{tiltRight}°");
 
             try
@@ -646,7 +693,140 @@ namespace TakeoffBridge
             }
         }
 
+        private void AddAngleDimensions(List<Solid3d> solids, double miterLeft, double tiltLeft,
+                               double miterRight, double tiltRight, double length,
+                               Database db, Transaction trans)
+        {
+            // Get the block table
+            BlockTable bt = (BlockTable)trans.GetObject(db.BlockTableId, OpenMode.ForRead);
+            BlockTableRecord ms = (BlockTableRecord)trans.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
 
+            // Create a layer for dimensions
+            LayerTable lt = (LayerTable)trans.GetObject(db.LayerTableId, OpenMode.ForRead);
+            string dimLayerName = "DIMENSIONS";
+
+            if (!lt.Has(dimLayerName))
+            {
+                lt.UpgradeOpen();
+                LayerTableRecord ltr = new LayerTableRecord();
+                ltr.Name = dimLayerName;
+                ltr.Color = Color.FromColorIndex(ColorMethod.ByAci, 3); // Green
+                lt.Add(ltr);
+                trans.AddNewlyCreatedDBObject(ltr, true);
+            }
+
+            // LEFT END DIMENSIONS
+            if (miterLeft != 90 || tiltLeft != 90)
+            {
+                // For miter - create dimension in XY plane
+                if (miterLeft != 90)
+                {
+                    // Create an angular dimension
+                    Point3d center = new Point3d(0, 0, 0);
+                    Point3d xAxisPt = new Point3d(5, 0, 0);
+                    Point3d anglePt;
+
+                    // Calculate point on angle line
+                    double angle = miterLeft.ToRadians();
+                    anglePt = new Point3d(5 * Math.Cos(angle), 5 * Math.Sin(angle), 0);
+
+                    // Create angular dimension 
+                    RotatedDimension dimObj = new RotatedDimension();
+                    dimObj.XLine1Point = center;
+                    dimObj.XLine2Point = xAxisPt;
+                    dimObj.DimLinePoint = anglePt;
+                    dimObj.Rotation = 0;
+                    dimObj.DimensionText = $"{miterLeft}°";
+                    dimObj.TextPosition = new Point3d(3, 3, 0);
+                    dimObj.Layer = dimLayerName;
+
+                    ms.AppendEntity(dimObj);
+                    trans.AddNewlyCreatedDBObject(dimObj, true);
+                }
+
+                // For tilt - create dimension in XZ plane
+                if (tiltLeft != 90)
+                {
+                    // Create an angular dimension for tilt
+                    Point3d center = new Point3d(0, 0, 0);
+                    Point3d xAxisPt = new Point3d(5, 0, 0);
+                    Point3d anglePt;
+
+                    // Calculate point on angle line
+                    double angle = tiltLeft.ToRadians();
+                    anglePt = new Point3d(5 * Math.Cos(angle), 0, 5 * Math.Sin(angle));
+
+                    // Create angular dimension
+                    RotatedDimension dimObj = new RotatedDimension();
+                    dimObj.XLine1Point = center;
+                    dimObj.XLine2Point = xAxisPt;
+                    dimObj.DimLinePoint = anglePt;
+                    dimObj.Rotation = 0;
+                    dimObj.DimensionText = $"{tiltLeft}°";
+                    dimObj.TextPosition = new Point3d(3, 0, 3);
+                    dimObj.Layer = dimLayerName;
+
+                    ms.AppendEntity(dimObj);
+                    trans.AddNewlyCreatedDBObject(dimObj, true);
+                }
+            }
+
+            // RIGHT END DIMENSIONS
+            if (miterRight != 90 || tiltRight != 90)
+            {
+                // For miter - create dimension in XY plane
+                if (miterRight != 90)
+                {
+                    // Create an angular dimension
+                    Point3d center = new Point3d(length, 0, 0);
+                    Point3d xAxisPt = new Point3d(length - 5, 0, 0);
+                    Point3d anglePt;
+
+                    // Calculate point on angle line
+                    double angle = (180 - miterRight).ToRadians();
+                    anglePt = new Point3d(length - 5 * Math.Cos(angle), 5 * Math.Sin(angle), 0);
+
+                    // Create angular dimension
+                    RotatedDimension dimObj = new RotatedDimension();
+                    dimObj.XLine1Point = center;
+                    dimObj.XLine2Point = xAxisPt;
+                    dimObj.DimLinePoint = anglePt;
+                    dimObj.Rotation = 0;
+                    dimObj.DimensionText = $"{miterRight}°";
+                    dimObj.TextPosition = new Point3d(length - 3, 3, 0);
+                    dimObj.Layer = dimLayerName;
+
+                    ms.AppendEntity(dimObj);
+                    trans.AddNewlyCreatedDBObject(dimObj, true);
+                }
+
+                // For tilt - create dimension in XZ plane
+                if (tiltRight != 90)
+                {
+                    // Create an angular dimension for tilt
+                    Point3d center = new Point3d(length, 0, 0);
+                    Point3d xAxisPt = new Point3d(length - 5, 0, 0);
+                    Point3d anglePt;
+
+                    // Calculate point on angle line
+                    double angle = tiltRight.ToRadians();
+                    anglePt = new Point3d(length - 5 * Math.Cos(angle), 0, 5 * Math.Sin(angle));
+
+                    // Create angular dimension
+                    RotatedDimension dimObj = new RotatedDimension();
+                    dimObj.XLine1Point = center;
+                    dimObj.XLine2Point = xAxisPt;
+                    dimObj.DimLinePoint = anglePt;
+                    dimObj.Rotation = 0;
+                    dimObj.DimensionText = $"{tiltRight}°";
+                    dimObj.TextPosition = new Point3d(length - 3, 0, 3);
+                    dimObj.Layer = dimLayerName;
+
+                    ms.AppendEntity(dimObj);
+                    trans.AddNewlyCreatedDBObject(dimObj, true);
+                }
+            }
+        }
 
         /// <summary>
         /// Creates a handed transformation matrix based on part characteristics
@@ -694,7 +874,8 @@ namespace TakeoffBridge
             bool handed = false,
             string handedSide = "",
             bool preserveOriginalOrientation = false,
-            bool visualizeOnly = false)
+            bool visualizeOnly = false,
+            bool addDimensions = true)
         {
             return CreateExtrudedPart(database, partDrawingPath, blockName, length,
                 miterLeft, tiltLeft, miterRight, tiltRight,
@@ -714,10 +895,12 @@ namespace TakeoffBridge
             string handedSide,
             Matrix3d finalTransform,
             bool preserveOriginalOrientation = false,
-            bool visualizeOnly = false)
+            bool visualizeOnly = false,
+            bool addDimensions = true)
         {
             List<Solid3d> resultSolids = new List<Solid3d>();
-            Editor ed = Application.DocumentManager.MdiActiveDocument.Editor;
+
+            Editor ed = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
 
             using (var trans = database.TransactionManager.StartTransaction())
             {
@@ -730,9 +913,13 @@ namespace TakeoffBridge
                     {
                         throw new Exception($"Failed to import drawing from {partDrawingPath}");
                     }
+                    try
+                    {
+                        
 
-                    // Extract regions from block
-                    ed.WriteMessage("\nExtracting regions from block...");
+
+                        // Extract regions from block
+                        ed.WriteMessage("\nExtracting regions from block...");
                     var regions = GetExtrusionRegionsFromBlock(database, btr.ObjectId, trans);
                     if (regions == null || regions.Count == 0)
                     {
@@ -757,6 +944,11 @@ namespace TakeoffBridge
                         ApplyMiterAndTiltCuts(resultSolids, miterLeft, tiltLeft, miterRight, tiltRight, length,
                                             preserveOriginalOrientation, visualizeOnly);
                     }
+                    // Add angle dimensions if needed
+                    if (addDimensions)
+                    {
+                        AddAngleDimensions(resultSolids, miterLeft, tiltLeft, miterRight, tiltRight, length, database, trans);
+                    }
 
                     // Apply final transformation
                     if (finalTransform != Matrix3d.Identity)
@@ -779,8 +971,8 @@ namespace TakeoffBridge
                         ms.AppendEntity(solid);
                         trans.AddNewlyCreatedDBObject(solid, true);
                     }
-
-                    ms.DowngradeOpen();
+                    trans.Commit();
+                    //ms.DowngradeOpen();
 
                     // Dispose of regions as they're no longer needed
                     foreach (var region in regions)
@@ -789,7 +981,12 @@ namespace TakeoffBridge
                     }
 
                     ed.WriteMessage("\nCommitting transaction...");
-                    trans.Commit();
+
+                    }
+                    finally
+                    {
+                        (btr as IDisposable)?.Dispose();
+                    }
                 }
                 catch (Exception ex)
                 {

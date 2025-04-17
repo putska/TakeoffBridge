@@ -456,29 +456,29 @@ namespace TakeoffBridge
                 tr.Commit();
 
                 // Call the drwprt function to replace the main part with updated dimensions
-                PartDrawingGenerator generator = new PartDrawingGenerator();
-                TakeoffBridge.PartDrawingGenerator.MirrorType mirrorType = partInfo.IsVertical ?
-                    TakeoffBridge.PartDrawingGenerator.MirrorType.VerticalMullion :
-                    TakeoffBridge.PartDrawingGenerator.MirrorType.None;
+                //PartDrawingGenerator generator = new PartDrawingGenerator();
+                //TakeoffBridge.PartDrawingGenerator.MirrorType mirrorType = partInfo.IsVertical ?
+                //    TakeoffBridge.PartDrawingGenerator.MirrorType.VerticalMullion :
+                //    TakeoffBridge.PartDrawingGenerator.MirrorType.None;
 
                 // Note: This is a simplified approach. A more complete implementation would
                 // modify the existing entities rather than replacing them.
 
                 // Since we're modifying an existing database rather than creating a new file,
                 // we'll pass null for the outputPath parameter
-                generator.DrwPrt(
-                    partInfo.PartNumber,
-                    partInfo.Length,
-                    partInfo.LeftRotation,
-                    partInfo.LeftTilt,
-                    partInfo.RightRotation,
-                    partInfo.RightTilt,
-                    (int)mirrorType,
-                    Point3d.Origin,
-                    null, // No side designation for main template
-                    0,    // Default height
-                    null  // No output file, modifying current database
-                );
+                //generator.DrwPrt(
+                //    partInfo.PartNumber,
+                //    partInfo.Length,
+                //    partInfo.LeftRotation,
+                //    partInfo.LeftTilt,
+                //    partInfo.RightRotation,
+                //    partInfo.RightTilt,
+                //    (int)mirrorType,
+                //    Point3d.Origin,
+                //    null, // No side designation for main template
+                //    0,    // Default height
+                //    null  // No output file, modifying current database
+                //);
             }
             catch (System.Exception ex)
             {
@@ -501,32 +501,32 @@ namespace TakeoffBridge
                 tr.Commit();
 
                 // Create a new part drawing generator
-                PartDrawingGenerator generator = new PartDrawingGenerator();
+                //PartDrawingGenerator generator = new PartDrawingGenerator();
 
                 foreach (var attachment in partInfo.Attachments)
                 {
                     // Set mirror type based on whether attachment is inverted
-                    TakeoffBridge.PartDrawingGenerator.MirrorType mirrorType = attachment.Invert ?
-                        TakeoffBridge.PartDrawingGenerator.MirrorType.ShearBlockClip :
-                        TakeoffBridge.PartDrawingGenerator.MirrorType.None;
+                    //TakeoffBridge.PartDrawingGenerator.MirrorType mirrorType = attachment.Invert ?
+                    //    TakeoffBridge.PartDrawingGenerator.MirrorType.ShearBlockClip :
+                    //    TakeoffBridge.PartDrawingGenerator.MirrorType.None;
 
                     // Create a point at the attachment position/height
                     Point3d attachPosition = new Point3d(attachment.Position, 0, attachment.Height);
 
                     // Call DrwPrt to create the attachment
-                    generator.DrwPrt(
-                        attachment.AttachedPartNumber,
-                        0, // Length 0 for attachments (shear blocks)
-                        45, // Standard angles
-                        90,
-                        45,
-                        90,
-                        (int)mirrorType,
-                        attachPosition,
-                        attachment.Side,
-                        attachment.Height,
-                        null // No output file, adding to current database
-                    );
+                    //generator.DrwPrt(
+                    //    attachment.AttachedPartNumber,
+                    //    0, // Length 0 for attachments (shear blocks)
+                    //    45, // Standard angles
+                    //    90,
+                    //    45,
+                    //    90,
+                    //    (int)mirrorType,
+                    //    attachPosition,
+                    //    attachment.Side,
+                    //    attachment.Height,
+                    //    null // No output file, adding to current database
+                    //);
                 }
 
                 // After adding all attachments, we need to start a new transaction

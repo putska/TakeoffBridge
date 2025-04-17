@@ -199,6 +199,9 @@ namespace TakeoffBridge
                 ed.WriteMessage($"\nCreating part with - Left: {miterLeft}°/{tiltLeft}°, Right: {miterRight}°/{tiltRight}°");
                 ed.WriteMessage($"\nPreserve original orientation: {preserveOriginalOrientation}");
 
+                bool handed = false; //setting this to true will mirror the part front to back for verticals
+                bool addDimensions = true;
+
                 // Create part
                 Drawfab drawfab = new Drawfab();
                 List<Solid3d> solids = drawfab.CreateExtrudedPart(
@@ -210,10 +213,11 @@ namespace TakeoffBridge
                     tiltLeft,
                     miterRight,
                     tiltRight,
-                    false,
+                    handed,
                     string.Empty,
                     finalTransform,
-                    preserveOriginalOrientation);
+                    preserveOriginalOrientation,
+                    addDimensions);
 
                 ed.WriteMessage($"\nSuccessfully created {solids.Count} solid(s).");
                 ed.WriteMessage($"\nPart dimensions: Width = {drawfab.Width:F3}, Height = {drawfab.Height:F3}");
