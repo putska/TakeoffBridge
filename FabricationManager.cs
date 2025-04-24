@@ -1,7 +1,7 @@
 ﻿using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
-using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
+using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Runtime;
 using Newtonsoft.Json;
 using System;
@@ -170,8 +170,7 @@ namespace TakeoffBridge
             catch (System.Exception ex)
             {
                 Document doc = Application.DocumentManager.MdiActiveDocument;
-                Editor ed = doc.Editor;
-                ed.WriteMessage($"\nError creating directory structure: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Error Creating Directory Structure: {ex.Message}");
             }
         }
 
@@ -631,29 +630,79 @@ namespace TakeoffBridge
                     // Copy the template file's contents into our new database
                     newDb.ReadDwgFile(TemplateFile, FileOpenMode.OpenForReadAndAllShare, true, "");
 
-                    // Add a circle to demonstrate changes
+                    // Add the part using Drawfab
                     using (Transaction tr = newDb.TransactionManager.StartTransaction())
                     {
-                        BlockTable bt = (BlockTable)tr.GetObject(newDb.BlockTableId, OpenMode.ForRead);
-                        BlockTableRecord modelSpace = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+                        try
+                        {
+                            // Check if part file exists
+                            if (File.Exists(partPath))
+                            {
+                                // Create Drawfab instance
+                                Drawfab drawfab = new Drawfab(partNumber);
 
-                        // Create circle
-                        Circle circle = new Circle();
-                        circle.SetDatabaseDefaults(newDb);
-                        circle.Center = new Point3d(5, 5, 0);
-                        circle.Radius = 2.5;
+                                // Use a standard length (30 inches)
+                                double standardLength = 30.0;
 
-                        // Add to modelspace
-                        modelSpace.AppendEntity(circle);
-                        tr.AddNewlyCreatedDBObject(circle, true);
+                                // Determine handed parameters based on whether it's vertical
+                                bool handed = false;
+                                string handedSide = "";
 
-                        tr.Commit();
+                                // Create transformation for insertion point
+                                Matrix3d transform = Matrix3d.Displacement(new Vector3d(0, 0, 0));
+
+                                // Create the part in the database
+                                drawfab.CreateExtrudedPart(
+                                    newDb,
+                                    partPath,
+                                    partNumber,
+                                    standardLength,
+                                    90, // Left miter 
+                                    90, // Left tilt
+                                    90, // Right miter
+                                    90, // Right tilt
+                                    handed,
+                                    handedSide,
+                                    transform);
+                            }
+                            else
+                            {
+                                ed.WriteMessage($"\nPart file not found: {partPath}. Created blank template.");
+                            }
+
+                            tr.Commit();
+                        }
+                        catch (System.Exception ex)
+                        {
+                            ed.WriteMessage($"\nError creating part: {ex.Message}");
+                            return false;
+                        }
+                    }
+
+                    using (Transaction tr = newDb.TransactionManager.StartTransaction())
+                    {
+                        try
+                        {
+                            // ... existing code for part insertion ...
+
+                            // Update layer visibility based on part type
+                            SetLayerVisibility(newDb, tr, isVertical);
+
+                            // Update viewport visibility based on part type
+                            SetViewportVisibility(newDb, tr, isVertical);
+
+                            tr.Commit();
+                        }
+                        catch (System.Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"Error: {ex.Message}");
+                            tr.Abort();
+                        }
                     }
 
                     // Save to the output file
                     newDb.SaveAs(templatePath, DwgVersion.Current);
-
-                    ed.WriteMessage("\nTemplate created successfully using database-only approach");
+                    ed.WriteMessage($"\nTemplate created successfully for {partNumber}");
                     return true;
                 }
             }
@@ -664,6 +713,150 @@ namespace TakeoffBridge
             }
         }
 
+        /// <summary>
+        /// Controls layer visibility in the drawing
+        /// </summary>
+        private void SetLayerVisibility(Database db, Transaction tr, bool isVertical)
+        {
+            // Get the layer table
+            LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+
+            // Check if our layers exist
+            if (lt.Has("x-title|BORDER4") && lt.Has("x-title|BORDER1"))
+            {
+                // Get layer records for write
+                LayerTableRecord ltrBorder4 = (LayerTableRecord)tr.GetObject(lt["x-title|BORDER4"], OpenMode.ForWrite);
+                LayerTableRecord ltrBorder1 = (LayerTableRecord)tr.GetObject(lt["x-title|BORDER1"], OpenMode.ForWrite);
+
+                if (isVertical)
+                {
+                    // Turn on Border4, turn off Border1
+                    ltrBorder4.IsOff = false;
+                    ltrBorder1.IsOff = true;
+                }
+                else
+                {
+                    // Turn off Border4, turn on Border1
+                    ltrBorder4.IsOff = true;
+                    ltrBorder1.IsOff = false;
+                }
+            }
+            else
+            {
+                System.Diagnostics.Debug.WriteLine("Required layers not found in template");
+            }
+        }
+
+        /// <summary>
+        /// Manages viewport visibility - keeps first 4 viewports on, toggles last 2 based on part type
+        /// </summary>
+        private void SetViewportVisibility(Database db, Transaction tr, bool isVertical)
+        {
+            // Get all layouts
+            DBDictionary layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+
+            // Find the layout we're working with (not Model)
+            Layout layout = null;
+            foreach (DBDictionaryEntry entry in layoutDict)
+            {
+                if (entry.Key != "Model")
+                {
+                    layout = (Layout)tr.GetObject(entry.Value, OpenMode.ForRead);
+                    break;
+                }
+            }
+
+            if (layout == null)
+            {
+                System.Diagnostics.Debug.WriteLine("No paper space layout found");
+                return;
+            }
+
+            // Get the block table record for this layout
+            BlockTableRecord btr = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForRead);
+
+            // Track which viewports we've modified
+            bool found534 = false;
+            bool found536 = false;
+
+            // First pass: Set all viewports as needed
+            foreach (ObjectId id in btr)
+            {
+                if (id.ObjectClass.DxfName == "VIEWPORT")
+                {
+                    Viewport vp = (Viewport)tr.GetObject(id, OpenMode.ForWrite);
+                    string handle = vp.Handle.ToString();
+
+                    // Turn on first 4 viewports for all parts
+                    //if (handle == "531" || handle == "52D" || handle == "52F" || handle == "52B")
+                    if (handle == "531" || handle == "52D")
+                    {
+                        vp.On = true;
+                        System.Diagnostics.Debug.WriteLine($"Set viewport with handle {handle} to ON (always)");
+                    }
+                    // Handle the last 2 viewports based on part type
+                    else if (handle == "534")
+                    {
+                        vp.On = isVertical;
+                        found534 = true;
+                        System.Diagnostics.Debug.WriteLine($"Set viewport with handle 534 to {(isVertical ? "ON" : "OFF")}");
+                    }
+                    else if (handle == "536")
+                    {
+                        vp.On = isVertical;
+                        found536 = true;
+                        System.Diagnostics.Debug.WriteLine($"Set viewport with handle 536 to {(isVertical ? "ON" : "OFF")}");
+                    }
+                    else
+                    {
+                        // For any other viewport, log that we found it but didn't modify it
+                        System.Diagnostics.Debug.WriteLine($"Found unrecognized viewport with handle {handle}, didn't modify");
+                    }
+                }
+            }
+
+            // Second pass: If we couldn't find viewports by handle, try by position
+            if (!found534 || !found536)
+            {
+                foreach (ObjectId id in btr)
+                {
+                    if (id.ObjectClass.DxfName == "VIEWPORT")
+                    {
+                        Viewport vp = (Viewport)tr.GetObject(id, OpenMode.ForWrite);
+
+                        // Only process if we haven't found one of our target viewports
+                        if ((!found534 || !found536) && vp.Handle.ToString() != "531" &&
+                            vp.Handle.ToString() != "52D" && vp.Handle.ToString() != "52F" &&
+                            vp.Handle.ToString() != "52B")
+                        {
+                            // Try to identify by position for the last 2 viewports
+                            Point3d center = vp.CenterPoint;
+
+                            // The bottom-left viewport (around position 2.16, 3.59)
+                            if (!found536 && Math.Abs(center.X - 2.16382) < 0.1 && Math.Abs(center.Y - 3.59155) < 0.1)
+                            {
+                                vp.On = isVertical;
+                                found536 = true;
+                                System.Diagnostics.Debug.WriteLine($"Set viewport at ({center.X}, {center.Y}) to {(isVertical ? "ON" : "OFF")} (as 536)");
+                            }
+                            // The bottom-right viewport (around position 11.06, 3.58)
+                            else if (!found534 && Math.Abs(center.X - 11.0607) < 0.1 && Math.Abs(center.Y - 3.58284) < 0.1)
+                            {
+                                vp.On = isVertical;
+                                found534 = true;
+                                System.Diagnostics.Debug.WriteLine($"Set viewport at ({center.X}, {center.Y}) to {(isVertical ? "ON" : "OFF")} (as 534)");
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Report if we still couldn't find our specific viewports
+            if (!found534 || !found536)
+            {
+                System.Diagnostics.Debug.WriteLine($"Warning: Could not find all target viewports. Missing: {(!found534 ? "534 " : "")}{(!found536 ? "536" : "")}");
+            }
+        }
 
 
         /// <summary>
@@ -774,11 +967,14 @@ namespace TakeoffBridge
         private void CreateFabricationTicket(string templatePath, string outputPath, List<PartInfo> parts, int pageNo)
         {
             if (parts.Count == 0) return;
-
             Document currentDoc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = currentDoc.Editor;
-
             ed.WriteMessage($"\nCreating fabrication ticket: {outputPath}");
+
+            // Determine if this is a vertical part (has attachments)
+            // Using the representative part (first in the list)
+            var representativePart = parts.First();
+            bool isVertical = representativePart.Attachments != null && representativePart.Attachments.Count > 0;
 
             try
             {
@@ -787,17 +983,14 @@ namespace TakeoffBridge
                 {
                     // Read the template file
                     db.ReadDwgFile(templatePath, FileOpenMode.OpenForReadAndAllShare, true, "");
-
                     // Modify the database
                     using (Transaction tr = db.TransactionManager.StartTransaction())
                     {
                         // Get the layout dictionary
                         DBDictionary layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
-
                         // Find the first layout (paper space) - typically it's named "Layout1"
                         // You can modify this to target a specific layout by name if needed
                         Layout layout = null;
-
                         // Try to find "Layout1" first
                         if (layoutDict.Contains("Layout1"))
                         {
@@ -815,28 +1008,28 @@ namespace TakeoffBridge
                                 }
                             }
                         }
-
                         if (layout == null)
                         {
                             throw new System.Exception("No paper space layout found in template");
                         }
-
                         // Get the block table record for this layout
                         BlockTableRecord paperSpace = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForWrite);
-
-                        // Get representative part for header info
-                        var representativePart = parts.First();
 
                         // Add header information to paper space
                         AddHeaderText(paperSpace, tr, representativePart, pageNo, db);
 
-                        // Add parts to the table in paper space
-                        AddPartsToTable(paperSpace, tr, parts, db);
+                        // Add parts to the table in paper space - now with isVertical parameter
+                        AddPartsToTable(paperSpace, tr, parts, db, isVertical);
+
+                        // Set layer visibility based on vertical status
+                        SetLayerVisibility(db, tr, isVertical);
+
+                        // Set viewport visibility based on vertical status
+                        SetViewportVisibility(db, tr, isVertical);
 
                         // Commit changes
                         tr.Commit();
                     }
-
                     // Save directly to the output path
                     db.SaveAs(outputPath, DwgVersion.Current);
                 }
@@ -860,6 +1053,8 @@ namespace TakeoffBridge
 
                 // Adjust text Y position based on vertical flag
                 double pty = isVertical ? 1.799 : PartNoY;
+                double jobY = isVertical ? 1.15961 : JobY;
+                double descriptionY = isVertical ? 1.497 : DescriptionY;
 
                 // Add part number
                 AddDText(paperSpace, tr, part.PartNumber.ToUpper(), PartNoX, pty, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
@@ -877,12 +1072,12 @@ namespace TakeoffBridge
                 string description = GetPartDescription(part.PartNumber);
                 if (!string.IsNullOrEmpty(description))
                 {
-                    AddDText(paperSpace, tr, description.ToUpper(), DescriptionX, DescriptionY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
+                    AddDText(paperSpace, tr, description.ToUpper(), DescriptionX, descriptionY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
                 }
 
                 // Add job number
                 string jobNumber = GetJobNumber();
-                AddDText(paperSpace, tr, jobNumber, JobX, JobY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
+                AddDText(paperSpace, tr, jobNumber, JobX, jobY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
             }
             catch (System.Exception ex)
             {
@@ -937,17 +1132,21 @@ namespace TakeoffBridge
         }
 
         /// <summary>
-        /// Adds parts information to the ticket table
+        /// Adds parts information to the ticket table, with special handling for vertical tickets
         /// </summary>
-        private void AddPartsToTable(BlockTableRecord paperSpace, Transaction tr, List<PartInfo> parts, Database db)
+        private void AddPartsToTable(BlockTableRecord paperSpace, Transaction tr, List<PartInfo> parts, Database db, bool isVertical)
         {
-            double currentY = TableStartY;
+            // For vertical tickets, adjust the starting position and max rows
+            double startY = isVertical ? TableStartY - (TableRowHeight * (MaxRowsPerTicket)) : TableStartY;
+            int maxRows = isVertical ? 1 : MaxRowsPerTicket;
+
+            double currentY = startY;
             int row = 1;
 
             foreach (PartInfo part in parts)
             {
                 // Don't exceed max rows per ticket
-                if (row > MaxRowsPerTicket)
+                if (row > maxRows)
                     break;
 
                 // Mark number
@@ -1229,22 +1428,22 @@ namespace TakeoffBridge
                     new Vector3d(insertionPoint.X, insertionPoint.Y, insertionPoint.Z));
 
                 // Create the attachment part directly in the database
-                drawfab.CreateExtrudedPart(
-                    ticketDb,
-                    partPath,
-                    partNumber,
-                    0, // Length 0 for attachments
-                    90, // Standard angles
-                    90,
-                    90,
-                    90,
-                    invert,
-                    side,
-                    transform);
+                //drawfab.CreateExtrudedPart(
+                //    ticketDb,
+                //    partPath,
+                //    partNumber,
+                //    0, // Length 0 for attachments
+                //    90, // Standard angles
+                //    90,
+                //    90,
+                //    90,
+                //    invert,
+                //    side,
+                //    transform);
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nError inserting attachment part with database: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Error inserting attached part with Database: {ex.Message}");
                 throw;
             }
         }

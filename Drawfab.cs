@@ -6,7 +6,6 @@ using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.ApplicationServices.Core;
 using Autodesk.AutoCAD.Colors;
 using Autodesk.AutoCAD.DatabaseServices;
-using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
 using Autodesk.AutoCAD.GraphicsInterface;
 
@@ -68,21 +67,102 @@ namespace TakeoffBridge
 
             if (!bt.Has(blockName))
             {
-                // Import the drawing file
-                bt.UpgradeOpen();
-
-                using (var tempDb = new Database(false, true))
+                try
                 {
-                    tempDb.ReadDwgFile(partDrawingPath, FileOpenMode.OpenForReadAndAllShare, true, null);
+                    // Create a new block
+                    BlockTableRecord newBtr = new BlockTableRecord();
+                    newBtr.Name = blockName;
 
-                    // Insert as block
-                    var blockId = database.Insert(blockName, tempDb, false);
+                    // Get the block table for write and add our new block
+                    bt.UpgradeOpen();
+                    bt.Add(newBtr);
+                    trans.AddNewlyCreatedDBObject(newBtr, true);
+
+                    // Now open the newly created block for write so we can add entities
+                    newBtr.UpgradeOpen();
+
+                    // Open the source drawing and copy entities directly
+                    using (var tempDb = new Database(false, true))
+                    {
+                        tempDb.ReadDwgFile(partDrawingPath, FileOpenMode.OpenForReadAndAllShare, true, "");
+
+                        using (Transaction tempTr = tempDb.TransactionManager.StartTransaction())
+                        {
+                            BlockTable tempBt = (BlockTable)tempTr.GetObject(tempDb.BlockTableId, OpenMode.ForRead);
+                            BlockTableRecord tempMs = (BlockTableRecord)tempTr.GetObject(
+                                tempBt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+
+                            // Copy each entity to the new block
+                            foreach (ObjectId id in tempMs)
+                            {
+                                try
+                                {
+                                    Entity ent = tempTr.GetObject(id, OpenMode.ForRead) as Entity;
+                                    if (ent != null)
+                                    {
+                                        // Clone the entity but handle possible errors
+                                        Entity clone = null;
+                                        try
+                                        {
+                                            // Create a deep copy of the entity
+                                            clone = ent.Clone() as Entity;
+
+                                            // Explicitly clear any XData to avoid database conflicts
+                                            clone.XData = null;
+
+                                            // Add to the block
+                                            newBtr.AppendEntity(clone);
+                                            trans.AddNewlyCreatedDBObject(clone, true);
+                                        }
+                                        catch (Exception cloneEx)
+                                        {
+                                            System.Diagnostics.Debug.WriteLine($"Error cloning entity: {cloneEx.Message}");
+                                            if (clone != null && !clone.IsDisposed)
+                                            {
+                                                clone.Dispose();
+                                            }
+                                        }
+                                    }
+                                }
+                                catch (Exception entEx)
+                                {
+                                    System.Diagnostics.Debug.WriteLine($"Error processing entity: {entEx.Message}");
+                                }
+                            }
+
+                            tempTr.Commit();
+                        }
+                    }
+
+                    // Downgrade the block table when done
                     bt.DowngradeOpen();
 
-                    return trans.GetObject(blockId, OpenMode.ForRead) as BlockTableRecord;
+                    return newBtr;
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Error in ImportDrawingAsBlock: {ex.Message}");
+
+                    // Create an empty block as a fallback
+                    try
+                    {
+                        BlockTableRecord emptyBlock = new BlockTableRecord();
+                        emptyBlock.Name = blockName;
+                        bt.Add(emptyBlock);
+                        trans.AddNewlyCreatedDBObject(emptyBlock, true);
+
+                        System.Diagnostics.Debug.WriteLine($"Created empty block '{blockName}' as fallback");
+                        return emptyBlock;
+                    }
+                    catch (Exception ex2)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Failed to create fallback block: {ex2.Message}");
+                        throw;
+                    }
                 }
             }
 
+            // Return existing block
             return trans.GetObject(bt[blockName], OpenMode.ForRead) as BlockTableRecord;
         }
 
@@ -417,6 +497,7 @@ namespace TakeoffBridge
             {
                 region.TransformBy(transformation);
             }
+
         }
 
         /// <summary>
@@ -427,7 +508,7 @@ namespace TakeoffBridge
 
             var solids = new List<Solid3d>();
             var sweepOpts = new SweepOptions();
-            Editor ed = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
+
 
             try
             {
@@ -447,7 +528,6 @@ namespace TakeoffBridge
                         solid.SetDatabaseDefaults(database);
                         solid.RecordHistory = false;
 
-                        ed.WriteMessage($"\nExtruding region with area: {region.Area} to length: {adjustedLength}");
                         solid.CreateExtrudedSolid(region, adjustedLength * extrusionDirection, sweepOpts);
 
                         // Transfer workpoint data if available
@@ -461,7 +541,10 @@ namespace TakeoffBridge
                     }
                     catch (Exception ex)
                     {
-                        ed.WriteMessage($"\nError extruding region: {ex.Message}");
+                        // write ext to output window not editor
+                        System.Diagnostics.Debug.WriteLine($"Error creating solid from region: {ex.Message}");
+
+
                         // Continue with other regions
                     }
                 }
@@ -494,8 +577,7 @@ namespace TakeoffBridge
         {
             Document doc = GetDocument();
             Database db = doc.Database;
-            Editor ed = doc.Editor;
-            ed.WriteMessage($"\nApplying cuts - Left: {miterLeft}°/{tiltLeft}°, Right: {miterRight}°/{tiltRight}°");
+
 
             try
             {
@@ -510,12 +592,10 @@ namespace TakeoffBridge
                 double partDepth = extents.MaxPoint.Y - extents.MinPoint.Y;   // Depth in Y
                 double partHeight = extents.MaxPoint.Z - extents.MinPoint.Z;  // Height in Z
 
-                ed.WriteMessage($"\nPart dimensions: Width={partWidth}, Depth={partDepth}, Height={partHeight}");
 
                 // LEFT END CUTTING - Unchanged from previous version
                 if (miterLeft != 90 || tiltLeft != 90)
                 {
-                    ed.WriteMessage("\nProcessing left cut...");
 
                     // Calculate cutting plane normal
                     double mRad = (miterLeft - 90).ToRadians();
@@ -544,7 +624,7 @@ namespace TakeoffBridge
                         offsetX = Math.Abs(offsetX);
 
                         planeOrigin = new Point3d(offsetX, 0, 0);
-                        ed.WriteMessage($"\nMoving left cut plane right to X={offsetX} for miter > 90");
+
                     }
 
                     // 2. For tilt > 90 (left side), move right
@@ -561,15 +641,13 @@ namespace TakeoffBridge
                         if (miterLeft <= 90 || offsetX > planeOrigin.X)
                         {
                             planeOrigin = new Point3d(offsetX, 0, 0);
-                            ed.WriteMessage($"\nMoving left cut plane right to X={offsetX} for tilt > 90");
+
                         }
                     }
 
                     // Create the cutting plane
                     Plane leftCutPlane = new Plane(planeOrigin, normal);
 
-                    ed.WriteMessage($"\nLeft cut normal: {normal.X}, {normal.Y}, {normal.Z}");
-                    ed.WriteMessage($"\nLeft cut plane origin: {planeOrigin.X}, {planeOrigin.Y}, {planeOrigin.Z}");
 
                     // Apply cutting operation
                     foreach (var solid in solids)
@@ -577,11 +655,11 @@ namespace TakeoffBridge
                         try
                         {
                             solid.Slice(leftCutPlane);
-                            ed.WriteMessage("\nLeft cut successful");
+
                         }
                         catch (Exception ex)
                         {
-                            ed.WriteMessage($"\nError on left cut: {ex.Message}");
+                            System.Diagnostics.Debug.WriteLine($"Error on Left Cut: {ex.Message}");
                         }
                     }
                 }
@@ -589,7 +667,6 @@ namespace TakeoffBridge
                 // RIGHT END CUTTING - MODIFIED for mirror behavior
                 if (miterRight != 90 || tiltRight != 90)
                 {
-                    ed.WriteMessage("\nProcessing right cut...");
 
                     // MIRROR LOGIC: Convert right angle to equivalent left angle
                     // For a mirror image, 45° right should behave like 135° left (180 - 45)
@@ -619,14 +696,14 @@ namespace TakeoffBridge
                     {
                         // No offset needed - stay at end of part
                         planeOrigin = new Point3d(length, 0, 0);
-                        ed.WriteMessage($"\nKeeping right cut plane at X={length} for 45° miter");
+
                     }
                     // For 135 degree miter (original), move left by depth
                     else if (miterRight == 135)
                     {
                         // Move left by depth
                         planeOrigin = new Point3d(length - partDepth, 0, 0);
-                        ed.WriteMessage($"\nMoving right cut plane left to X={length - partDepth} for 135° miter");
+
                     }
                     // Handle any other miter angles
                     else if (miterRight != 90)
@@ -637,13 +714,13 @@ namespace TakeoffBridge
                             double offsetX = partDepth * Math.Tan((miterRight - 90).ToRadians());
                             offsetX = Math.Abs(offsetX);
                             planeOrigin = new Point3d(length - offsetX, 0, 0);
-                            ed.WriteMessage($"\nMoving right cut plane left to X={length - offsetX} for miter > 90");
+
                         }
                         // For less than 90, no movement needed
                         else
                         {
                             planeOrigin = new Point3d(length, 0, 0);
-                            ed.WriteMessage($"\nKeeping right cut plane at X={length} for miter < 90");
+
                         }
                     }
 
@@ -662,15 +739,13 @@ namespace TakeoffBridge
                             (mirroredMiter > 90 && length - offsetX < planeOrigin.X))
                         {
                             planeOrigin = new Point3d(length - offsetX, 0, 0);
-                            ed.WriteMessage($"\nMoving right cut plane LEFT to X={length - offsetX} for tilt > 90");
+
                         }
                     }
 
                     // Create the cutting plane
                     Plane rightCutPlane = new Plane(planeOrigin, normal);
 
-                    ed.WriteMessage($"\nRight cut normal: {normal.X}, {normal.Y}, {normal.Z}");
-                    ed.WriteMessage($"\nRight cut plane origin: {planeOrigin.X}, {planeOrigin.Y}, {planeOrigin.Z}");
 
                     // Apply cutting operation
                     foreach (var solid in solids)
@@ -678,18 +753,18 @@ namespace TakeoffBridge
                         try
                         {
                             solid.Slice(rightCutPlane);
-                            ed.WriteMessage("\nRight cut successful");
+
                         }
                         catch (Exception ex)
                         {
-                            ed.WriteMessage($"\nError on right cut: {ex.Message}");
+                            System.Diagnostics.Debug.WriteLine($"Error on Right Cut: {ex.Message}");
                         }
                     }
                 }
             }
             catch (Exception ex)
             {
-                ed.WriteMessage($"\nGeneral error in ApplyMiterAndTiltCuts: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Error on Applying Miter and Tilt Cuts: {ex.Message}");
             }
         }
 
@@ -900,14 +975,12 @@ namespace TakeoffBridge
         {
             List<Solid3d> resultSolids = new List<Solid3d>();
 
-            Editor ed = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
 
             using (var trans = database.TransactionManager.StartTransaction())
             {
                 try
                 {
                     // Import drawing as block
-                    ed.WriteMessage("\nImporting drawing as block...");
                     var btr = ImportDrawingAsBlock(database, partDrawingPath, blockName, trans);
                     if (btr == null)
                     {
@@ -919,28 +992,23 @@ namespace TakeoffBridge
 
 
                         // Extract regions from block
-                        ed.WriteMessage("\nExtracting regions from block...");
                     var regions = GetExtrusionRegionsFromBlock(database, btr.ObjectId, trans);
                     if (regions == null || regions.Count == 0)
                     {
                         throw new Exception("No valid regions found in the drawing");
                     }
-                    ed.WriteMessage($"\nFound {regions.Count} region(s)");
+
 
                     // Transform regions to orientation
-                    ed.WriteMessage("\nTransforming regions...");
                     var handedTransformation = GetHandedTransformation(handed, handedSide);
                     TransformRegionsToStandardOrientation(regions, handedTransformation, preserveOriginalOrientation);
 
                     // Extrude regions to create solids
-                    ed.WriteMessage("\nExtruding regions...");
                     resultSolids = ExtrudeRegions(regions, length, database, trans, preserveOriginalOrientation);
-                    ed.WriteMessage($"\nCreated {resultSolids.Count} solid(s)");
 
                     /// Apply miter and tilt cuts if needed
                     if (miterLeft != 90 || tiltLeft != 90 || miterRight != 90 || tiltRight != 90)
                     {
-                        ed.WriteMessage($"\nApplying miter cuts: Left={miterLeft},{tiltLeft} Right={miterRight},{tiltRight}");
                         ApplyMiterAndTiltCuts(resultSolids, miterLeft, tiltLeft, miterRight, tiltRight, length,
                                             preserveOriginalOrientation, visualizeOnly);
                     }
@@ -953,7 +1021,6 @@ namespace TakeoffBridge
                     // Apply final transformation
                     if (finalTransform != Matrix3d.Identity)
                     {
-                        ed.WriteMessage("\nApplying final transformation...");
                         foreach (var solid in resultSolids)
                         {
                             solid.TransformBy(finalTransform);
@@ -961,7 +1028,6 @@ namespace TakeoffBridge
                     }
 
                     // Add solids to modelspace
-                    ed.WriteMessage("\nAdding solids to modelspace...");
                     var ms = database.GetModelspace(trans);
                     ms.UpgradeOpen();
 
@@ -980,8 +1046,6 @@ namespace TakeoffBridge
                         region.Dispose();
                     }
 
-                    ed.WriteMessage("\nCommitting transaction...");
-
                     }
                     finally
                     {
@@ -990,10 +1054,10 @@ namespace TakeoffBridge
                 }
                 catch (Exception ex)
                 {
-                    ed.WriteMessage($"\nError in CreateExtrudedPart: {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"Error Creating Extruded Part: {ex.Message}");
                     if (ex.InnerException != null)
                     {
-                        ed.WriteMessage($"\nInner exception: {ex.InnerException.Message}");
+                        System.Diagnostics.Debug.WriteLine($"Inner Exception: {ex.InnerException.Message}");
                     }
                     trans.Abort();
                     throw new Exception($"Failed to create extruded part: {ex.Message}", ex);

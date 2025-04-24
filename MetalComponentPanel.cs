@@ -1093,9 +1093,6 @@ namespace TakeoffBridge
             Brush textBrush = sideDirection < 0 ? Brushes.Blue : Brushes.Red;
             Pen linePen = new Pen(sideColor, 2);
 
-            // Horizontal line length
-            int horizontalLineLength = 60;
-
             foreach (var attach in attachments)
             {
                 try
