@@ -199,13 +199,9 @@ namespace TakeoffBridge
                 ed.WriteMessage("\nStep 2: Ensuring templates exist...");
                 EnsureTemplatesExist(allParts);
 
-                // 3. Generate fabrication tickets
+                // 3. Generate fabrication tickets and attachments
                 ed.WriteMessage("\nStep 3: Generating fabrication tickets...");
                 GenerateFabricationTickets(allParts);
-
-                // 4. Add attachments to tickets
-                ed.WriteMessage("\nStep 4: Adding attachments to tickets...");
-                AddAttachmentsToTickets(allParts);
 
                 ed.WriteMessage("\n--- Fabrication Process Completed Successfully ---");
             }
@@ -663,7 +659,11 @@ namespace TakeoffBridge
                                     90, // Right tilt
                                     handed,
                                     handedSide,
-                                    transform);
+                                    transform,
+                                    false,
+                                    false,
+                                    true,
+                                    isVertical);
                             }
                             else
                             {
@@ -752,6 +752,7 @@ namespace TakeoffBridge
         /// </summary>
         private void SetViewportVisibility(Database db, Transaction tr, bool isVertical)
         {
+
             // Get all layouts
             DBDictionary layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
 
@@ -793,6 +794,20 @@ namespace TakeoffBridge
                     {
                         vp.On = true;
                         System.Diagnostics.Debug.WriteLine($"Set viewport with handle {handle} to ON (always)");
+                    }
+                    if (handle == "52F" || handle == "52B")
+                    {
+                        vp.On = false;
+                        System.Diagnostics.Debug.WriteLine($"Set viewport with handle {handle} to OFF (always)");
+                    }
+                    // Special handling for paperspace viewport (handle 23)
+                    if (handle == "23")
+                    {
+                        // Move to VPORTS layer and turn it off
+                        vp.Layer = "VPORTS";
+                        vp.On = false;
+                        System.Diagnostics.Debug.WriteLine($"Moved paperspace viewport (handle 23) to VPORTS layer and turned it OFF");
+                        continue;
                     }
                     // Handle the last 2 viewports based on part type
                     else if (handle == "534")
@@ -1027,6 +1042,19 @@ namespace TakeoffBridge
                         // Set viewport visibility based on vertical status
                         SetViewportVisibility(db, tr, isVertical);
 
+                        // Process attachments if this is a vertical part
+                        if (isVertical)
+                        {
+                            // Process each part's attachments
+                            foreach (var part in parts)
+                            {
+                                if (part.Attachments != null && part.Attachments.Count > 0)
+                                {
+                                    ProcessAttachmentsForTicket(part, db, tr);
+                                }
+                            }
+                        }
+
                         // Commit changes
                         tr.Commit();
                     }
@@ -1236,134 +1264,122 @@ namespace TakeoffBridge
         #region Attachment Processing
 
         /// <summary>
-        /// Adds attachments to the fabrication tickets using database-only approach
+        /// Processes attachments for a ticket during the initial fabrication ticket creation
         /// </summary>
-        private void AddAttachmentsToTickets(List<PartInfo> parts)
+        private void ProcessAttachmentsForTicket(PartInfo part, Database db, Transaction tr)
         {
-            Document currentDoc = Application.DocumentManager.MdiActiveDocument;
-            Editor ed = currentDoc.Editor;
-
-            // Filter parts with attachments
-            var partsWithAttachments = parts.Where(p => p.Attachments.Count > 0).ToList();
-
-            if (partsWithAttachments.Count == 0)
-            {
-                ed.WriteMessage("\nNo attachments to process.");
-                return;
-            }
-
-            ed.WriteMessage($"\nProcessing attachments for {partsWithAttachments.Count} parts...");
-
-            // Process each part with attachments
-            foreach (var part in partsWithAttachments)
-            {
-                // Find all tickets for this part
-                string partNumberPattern = $"{part.PartNumber}_*.dwg";
-                string[] ticketFiles = Directory.GetFiles(FabsPath, partNumberPattern);
-
-                foreach (string ticketFile in ticketFiles)
-                {
-                    try
-                    {
-                        // Process attachments for this ticket using database approach
-                        ProcessAttachmentsForTicketWithDatabase(ticketFile, part);
-                    }
-                    catch (System.Exception ex)
-                    {
-                        ed.WriteMessage($"\nError processing attachments for {ticketFile}: {ex.Message}");
-                    }
-                }
-            }
-        }
-
-
-        /// <summary>
-        /// Processes attachments for a ticket using database-only approach
-        /// </summary>
-        private void ProcessAttachmentsForTicketWithDatabase(string ticketFile, PartInfo part)
-        {
-            Document currentDoc = Application.DocumentManager.MdiActiveDocument;
-            Editor ed = currentDoc.Editor;
-
             try
             {
-                // Work directly with the database
-                using (Database ticketDb = new Database(false, true))
+                // Get model space for 3D parts
+                BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                BlockTableRecord modelSpace = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                // Find paper space layout
+                DBDictionary layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+
+                // Find the first layout (paper space) that's not Model
+                Layout layout = null;
+                foreach (DBDictionaryEntry entry in layoutDict)
                 {
-                    // Open the ticket database
-                    ticketDb.ReadDwgFile(ticketFile, FileOpenMode.OpenForReadAndWriteNoShare, false, "");
-
-                    using (Transaction tr = ticketDb.TransactionManager.StartTransaction())
+                    if (entry.Key != "Model")
                     {
-                        // Find paper space layout
-                        DBDictionary layoutDict = (DBDictionary)tr.GetObject(ticketDb.LayoutDictionaryId, OpenMode.ForRead);
+                        layout = (Layout)tr.GetObject(entry.Value, OpenMode.ForRead);
+                        break;
+                    }
+                }
 
-                        // Find the first layout (paper space) that's not Model
-                        Layout layout = null;
-                        foreach (DBDictionaryEntry entry in layoutDict)
-                        {
-                            if (entry.Key != "Model")
-                            {
-                                layout = (Layout)tr.GetObject(entry.Value, OpenMode.ForRead);
-                                break;
-                            }
-                        }
+                if (layout == null)
+                {
+                    throw new System.Exception("No paper space layout found in ticket");
+                }
 
-                        if (layout == null)
-                        {
-                            throw new System.Exception("No paper space layout found in ticket");
-                        }
+                // Get the block table record for this layout
+                BlockTableRecord paperSpace = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForWrite);
 
-                        // Get the block table record for this layout
-                        BlockTableRecord paperSpace = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForWrite);
-
-                        // Get model space for 3D parts
-                        BlockTable bt = (BlockTable)tr.GetObject(ticketDb.BlockTableId, OpenMode.ForRead);
-                        BlockTableRecord modelSpace = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
-
-                        // Process attachments
-                        foreach (var attachment in part.Attachments)
-                        {
-                            // Determine attachment drawing path
-                            string attachmentPartPath = Path.Combine(ApPath, $"{attachment.AttachedPartNumber}.dwg");
-                            if (!File.Exists(attachmentPartPath))
-                            {
-                                ed.WriteMessage($"\nAttachment part file not found: {attachmentPartPath}");
-                                continue;
-                            }
-
-                            // Calculate position based on attachment data
-                            Point3d insertionPoint = CalculateAttachmentPosition(
-                                part.Length,
-                                attachment.Position,
-                                attachment.Height,
-                                attachment.Side);
-
-                            // Insert the attachment (in model space, since it's a 3D part)
-                            InsertAttachmentPartWithDatabase(
-                                ticketDb,
-                                tr,
-                                modelSpace,
-                                attachmentPartPath,
-                                attachment.AttachedPartNumber,
-                                insertionPoint,
-                                attachment.Side,
-                                attachment.Invert);
-                        }
-
-                        // Add attachment information to attachment table (in paper space)
-                        AddAttachmentTableInfo(paperSpace, tr, part.Attachments, ticketDb);
-
-                        tr.Commit();
+                // Process each attachment
+                foreach (var attachment in part.Attachments)
+                {
+                    // Determine attachment drawing path
+                    string attachmentPartPath = Path.Combine(ApPath, $"{attachment.AttachedPartNumber}.dwg");
+                    if (!File.Exists(attachmentPartPath))
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Attachment part file not found: {attachmentPartPath}");
+                        continue;
                     }
 
-                    // Save the changes back to the ticket file
-                    ticketDb.SaveAs(ticketFile, DwgVersion.Current);
+                    // Calculate position based on attachment data
+                    Point3d insertionPoint = CalculateAttachmentPosition(
+                        part.Length,
+                        attachment.Position,
+                        attachment.Height,
+                        attachment.Side);
+
+                    // Insert the attachment part
+                    InsertAttachmentPart(
+                        db,
+                        tr,
+                        modelSpace,
+                        attachmentPartPath,
+                        attachment.AttachedPartNumber,
+                        insertionPoint,
+                        attachment.Side,
+                        attachment.Invert);
                 }
+
+                // Add attachment information to attachment table (in paper space)
+                AddAttachmentTableInfo(paperSpace, tr, part.Attachments, db);
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nError processing attachments with database: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Error processing attachments for ticket: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Inserts an attachment part drawing
+        /// </summary>
+        private void InsertAttachmentPart(
+            Database db,
+            Transaction tr,
+            BlockTableRecord modelSpace,
+            string partPath,
+            string partNumber,
+            Point3d insertionPoint,
+            string side,
+            bool invert)
+        {
+            try
+            {
+                // Create Drawfab instance for this part
+                Drawfab drawfab = new Drawfab(partNumber);
+
+                // Determine handed parameters based on side and invert
+                bool handed = (side == "L" || side == "R");
+                string handedSide = side;
+
+                // Create transformation matrix for positioning
+                Matrix3d transform = Matrix3d.Displacement(
+                    new Vector3d(insertionPoint.X, insertionPoint.Y, insertionPoint.Z));
+
+                // Create the attachment part
+                drawfab.CreateExtrudedPart(
+                    db,              // Use the current database
+                    partPath,        // Path to the part drawing
+                    partNumber,      // Block name
+                    0,               // Length 0 for attachments
+                    90, 90, 90, 90,  // Standard angles
+                    handed,          // Whether it's a handed part
+                    handedSide,      // Which side (L/R)
+                    transform,       // Position transformation
+                    false,           // preserveOriginalOrientation
+                    false,           // visualizeOnly
+                    true,            // addDimensions
+                    true);           // isVertical = true for attachments
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error inserting attached part: {ex.Message}");
                 throw;
             }
         }
@@ -1398,55 +1414,7 @@ namespace TakeoffBridge
             return new Point3d(x, y, z);
         }
 
-        /// <summary>
-        /// Inserts an attachment part drawing using database-only approach
-        /// </summary>
-        private void InsertAttachmentPartWithDatabase(
-            Database ticketDb,
-            Transaction tr,
-            BlockTableRecord modelSpace,
-            string partPath,
-            string partNumber,
-            Point3d insertionPoint,
-            string side,
-            bool invert)
-        {
-            Document currentDoc = Application.DocumentManager.MdiActiveDocument;
-            Editor ed = currentDoc.Editor;
-
-            try
-            {
-                // Use Drawfab to insert the part, passing null for the document
-                // to ensure it uses the database we provide
-                Drawfab drawfab = new Drawfab(partNumber);
-
-                // Determine mirror type based on invert flag
-                int mirrorType = invert ? 2 : 0;
-
-                // Create matrix for positioning
-                Matrix3d transform = Matrix3d.Displacement(
-                    new Vector3d(insertionPoint.X, insertionPoint.Y, insertionPoint.Z));
-
-                // Create the attachment part directly in the database
-                //drawfab.CreateExtrudedPart(
-                //    ticketDb,
-                //    partPath,
-                //    partNumber,
-                //    0, // Length 0 for attachments
-                //    90, // Standard angles
-                //    90,
-                //    90,
-                //    90,
-                //    invert,
-                //    side,
-                //    transform);
-            }
-            catch (System.Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Error inserting attached part with Database: {ex.Message}");
-                throw;
-            }
-        }
+        
 
         /// <summary>
         /// Adds attachment information to the attachment table in the ticket

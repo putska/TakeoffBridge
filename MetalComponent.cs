@@ -892,7 +892,6 @@ namespace TakeoffBridge
             public double Adjust { get; set; }
         }
 
-        // Helper methods
         private bool LinesIntersect(Point3d line1Start, Point3d line1End,
                            Point3d line2Start, Point3d line2End,
                            out Point3d intersectionPoint,
@@ -904,26 +903,40 @@ namespace TakeoffBridge
                 return true;
             }
 
-            // If no exact intersection, check for proximity
-            // Assuming line1 is vertical and line2 is horizontal
+            // If no exact intersection, check for proximity cases
 
+            // CASE 1: Check if horizontal line is near vertical line's endpoints (head/sill cases)
+            // This checks if vertical top (line1End) is near horizontal line (potential head)
+            if (PointToLineDistance(line1End, line2Start, line2End) <= proximityThreshold)
+            {
+                intersectionPoint = line1End; // Use vertical top as intersection point
+                return true;
+            }
+
+            // This checks if vertical bottom (line1Start) is near horizontal line (potential sill)
+            if (PointToLineDistance(line1Start, line2Start, line2End) <= proximityThreshold)
+            {
+                intersectionPoint = line1Start; // Use vertical bottom as intersection point
+                return true;
+            }
+
+            // CASE 2: Check if vertical line is near horizontal line's endpoints
             // Get bounding box of vertical line
             double minY = Math.Min(line1Start.Y, line1End.Y);
             double maxY = Math.Max(line1Start.Y, line1End.Y);
-            double x1 = line1Start.X;
+            double x1 = line1Start.X; // Assuming vertical line has nearly constant X
 
             // Get bounding box of horizontal line
             double minX = Math.Min(line2Start.X, line2End.X);
             double maxX = Math.Max(line2Start.X, line2End.X);
-            double y2 = line2Start.Y;
+            double y2 = line2Start.Y; // Assuming horizontal line has nearly constant Y
 
-            // Check if horizontal end is close to vertical
-            if (minY <= y2 && y2 <= maxY)  // Horizontal is at same height as vertical
+            // Check if horizontal's Y is within vertical's height range
+            if (minY <= y2 && y2 <= maxY)
             {
                 // Check if left end of horizontal is close to vertical
                 if (Math.Abs(minX - x1) <= proximityThreshold)
                 {
-                    // Create intersection point at the projection
                     intersectionPoint = new Point3d(x1, y2, 0);
                     return true;
                 }
@@ -931,7 +944,6 @@ namespace TakeoffBridge
                 // Check if right end of horizontal is close to vertical
                 if (Math.Abs(maxX - x1) <= proximityThreshold)
                 {
-                    // Create intersection point at the projection
                     intersectionPoint = new Point3d(x1, y2, 0);
                     return true;
                 }
@@ -939,6 +951,30 @@ namespace TakeoffBridge
 
             // No intersection found
             return false;
+        }
+
+        // Helper to calculate distance from point to line segment
+        private double PointToLineDistance(Point3d point, Point3d lineStart, Point3d lineEnd)
+        {
+            // Create vectors
+            Vector3d v = lineEnd - lineStart;
+            Vector3d w = point - lineStart;
+
+            // Calculate projection ratio
+            double c1 = w.DotProduct(v);
+            double c2 = v.DotProduct(v);
+
+            // Calculate the parameter of the closest point
+            double b = (c2 > 0) ? c1 / c2 : 0;
+
+            // Clamp to line segment
+            b = Math.Max(0, Math.Min(1, b));
+
+            // Get the closest point on the line
+            Point3d closestPoint = lineStart + b * v;
+
+            // Return the distance
+            return point.DistanceTo(closestPoint);
         }
 
         // Method for exact intersection calculation

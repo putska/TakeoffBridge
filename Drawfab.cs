@@ -448,9 +448,9 @@ namespace TakeoffBridge
         }
 
         /// <summary>
-        /// Transform regions to standard orientation
+        /// Transform regions to standard orientation with optional front-to-back mirroring for vertical parts
         /// </summary>
-        private void TransformRegionsToStandardOrientation(List<Region> regions, Matrix3d handedTransformation, bool preserveOriginalOrientation = false)
+        private void TransformRegionsToStandardOrientation(List<Region> regions, Matrix3d handedTransformation, bool preserveOriginalOrientation = false, bool isVertical = false)
         {
             // Calculate extents for dimensions
             var extents = new Extents3d();
@@ -463,41 +463,58 @@ namespace TakeoffBridge
             _width = extents.MaxPoint.X - extents.MinPoint.X;
             _height = extents.MaxPoint.Y - extents.MinPoint.Y;
 
-            // Modified: Move to origin with vertical centering
-            // Create the displacement vector correctly
+            // Only mirror if this is a vertical part
+            if (isVertical)
+            {
+                // Calculate the center point of the part
+                Point3d partCenter = new Point3d(
+                    (extents.MinPoint.X + extents.MaxPoint.X) / 2,
+                    (extents.MinPoint.Y + extents.MaxPoint.Y) / 2,
+                    (extents.MinPoint.Z + extents.MaxPoint.Z) / 2);
+
+                // First apply mirroring around the part's center
+                // Rotate 180 degrees around Y axis passing through the part's center
+                var mirrorTransform = Matrix3d.Rotation(Math.PI, Vector3d.YAxis, partCenter);
+
+                // Apply mirroring to all regions
+                foreach (var region in regions)
+                {
+                    region.TransformBy(mirrorTransform);
+                }
+
+                // Now calculate extents again after mirroring
+                extents = new Extents3d();
+                foreach (var region in regions)
+                {
+                    extents.AddExtents(region.GeometricExtents);
+                }
+            }
+
+            // Create the displacement vector to center the part
             Vector3d displacementVector = new Vector3d(
                 -extents.MinPoint.X,
                 -(extents.MinPoint.Y + extents.MaxPoint.Y) / 2, // Center vertically
                 -extents.MinPoint.Z);
 
-            // Apply displacement
+            // Apply displacement transform
             var transformation = Matrix3d.Displacement(displacementVector);
 
             if (!preserveOriginalOrientation)
             {
                 // Standard mode: orient for extrusion along X axis
-                // In standard orientation, the part is oriented for extrusion along X
-                // with its face in the YZ plane at the origin
                 transformation = Matrix3d.Rotation(Math.PI / 2, Vector3d.YAxis, Point3d.Origin) * transformation;
                 // Compensate for the -90 degree rotation by rotating around X axis
                 transformation = Matrix3d.Rotation(Math.PI / 2, Vector3d.XAxis, Point3d.Origin) * transformation;
-            }
-            else
-            {
-                // Preservation mode: keep original orientation but prepare for extrusion
-                // When preserving orientation, part should be extruded along Z axis
-                // with its face in the XY plane at the origin
             }
 
             // Apply handed transformation 
             transformation = handedTransformation * transformation;
 
-            // Apply transformation to regions
+            // Apply remaining transformations to regions
             foreach (var region in regions)
             {
                 region.TransformBy(transformation);
             }
-
         }
 
         /// <summary>
@@ -934,7 +951,7 @@ namespace TakeoffBridge
         {
             return CreateExtrudedPart(database, partDrawingPath, blockName, length,
                 miterLeft, tiltLeft, miterRight, tiltRight,
-                handed, handedSide, Matrix3d.Identity);
+                handed, handedSide, Matrix3d.Identity, false, false, true, false);
         }
 
         public List<Solid3d> CreateExtrudedPart(
@@ -950,11 +967,12 @@ namespace TakeoffBridge
             string handedSide = "",
             bool preserveOriginalOrientation = false,
             bool visualizeOnly = false,
-            bool addDimensions = true)
+            bool addDimensions = true,
+            bool isVertical = false)
         {
             return CreateExtrudedPart(database, partDrawingPath, blockName, length,
                 miterLeft, tiltLeft, miterRight, tiltRight,
-                handed, handedSide, Matrix3d.Identity, preserveOriginalOrientation, visualizeOnly);
+                handed, handedSide, Matrix3d.Identity, preserveOriginalOrientation, visualizeOnly, addDimensions, isVertical);
         }
 
         public List<Solid3d> CreateExtrudedPart(
@@ -971,7 +989,8 @@ namespace TakeoffBridge
             Matrix3d finalTransform,
             bool preserveOriginalOrientation = false,
             bool visualizeOnly = false,
-            bool addDimensions = true)
+            bool addDimensions = true,
+            bool isVertical = false)
         {
             List<Solid3d> resultSolids = new List<Solid3d>();
 
@@ -998,10 +1017,9 @@ namespace TakeoffBridge
                         throw new Exception("No valid regions found in the drawing");
                     }
 
-
                     // Transform regions to orientation
                     var handedTransformation = GetHandedTransformation(handed, handedSide);
-                    TransformRegionsToStandardOrientation(regions, handedTransformation, preserveOriginalOrientation);
+                    TransformRegionsToStandardOrientation(regions, handedTransformation, preserveOriginalOrientation, isVertical);
 
                     // Extrude regions to create solids
                     resultSolids = ExtrudeRegions(regions, length, database, trans, preserveOriginalOrientation);
