@@ -9,13 +9,14 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using Newtonsoft.Json.Linq;
 
 namespace TakeoffBridge
 {
     /// <summary>
     /// Consolidated class that manages both template generation and fabrication ticket creation.
     /// </summary>
-    public class FabricationManager
+    public partial class FabricationManager
     {
         #region Properties and Fields
 
@@ -70,38 +71,7 @@ namespace TakeoffBridge
             public string AttachedFab { get; set; }
         }
 
-        public class ChildPart
-        {
-            public string Name { get; set; }
-            public string PartType { get; set; }
-            public double LengthAdjustment { get; set; }
-            public bool IsShopUse { get; set; }
-            public double StartAdjustment { get; set; }
-            public double EndAdjustment { get; set; }
-            public bool IsFixedLength { get; set; }
-            public double FixedLength { get; set; }
-            public string MarkNumber { get; set; }
-            public string Material { get; set; }
-            public string Attach { get; set; }
-            public bool Invert { get; set; }
-            public double Adjust { get; set; }
-            public bool Clips { get; set; }
-            public string Finish { get; set; }
-            public string Fab { get; set; }
-        }
-
-        public class Attachment
-        {
-            public string HorizontalHandle { get; set; }
-            public string VerticalHandle { get; set; }
-            public string HorizontalPartType { get; set; }
-            public string VerticalPartType { get; set; }
-            public string Side { get; set; }
-            public double Position { get; set; }
-            public double Height { get; set; }
-            public bool Invert { get; set; }
-            public double Adjust { get; set; }
-        }
+        
 
         // Text locations from VBA code
         private readonly double DefaultTextHeight = 0.125;
@@ -219,325 +189,81 @@ namespace TakeoffBridge
 
         #region Data Collection Methods
 
-        /// <summary>
-        /// Collects part data from the current drawing
-        /// </summary>
         private List<PartInfo> CollectPartsDataFromDrawing()
         {
-            Document doc = Application.DocumentManager.MdiActiveDocument;
-            Database db = doc.Database;
-            Editor ed = doc.Editor;
-
             List<PartInfo> allParts = new List<PartInfo>();
-            List<Attachment> allAttachments = LoadAttachmentsFromDrawing();
-            Dictionary<string, string> componentTypesByHandle = new Dictionary<string, string>();
-            Dictionary<string, List<ChildPart>> partsByComponentHandle = new Dictionary<string, List<ChildPart>>();
-
-            using (Transaction tr = db.TransactionManager.StartTransaction())
-            {
-                try
-                {
-                    // Get all components (polylines with METALCOMP xdata)
-                    List<Entity> components = GetAllMetalComponents(db, tr, ed);
-                    ed.WriteMessage($"\nFound {components.Count} metal components in drawing.");
-
-                    // Process each component to extract part information
-                    foreach (Entity component in components)
-                    {
-                        string componentType = GetComponentType(component);
-                        if (componentType != null)
-                        {
-                            componentTypesByHandle[component.Handle.ToString()] = componentType;
-                            List<ChildPart> childParts = GetChildParts(component);
-                            partsByComponentHandle[component.Handle.ToString()] = childParts;
-
-                            // Process each part for fabrication
-                            foreach (ChildPart part in childParts)
-                            {
-                                // Skip parts with missing essential information
-                                if (string.IsNullOrEmpty(part.Fab) || string.IsNullOrEmpty(part.Name))
-                                    continue;
-
-                                // Calculate part length
-                                double partLength = part.IsFixedLength ? part.FixedLength :
-                                                   CalculatePartLength(component, part);
-
-                                // Create part info
-                                PartInfo partInfo = new PartInfo
-                                {
-                                    PartNumber = part.Name,
-                                    PartType = part.PartType,
-                                    Fab = part.Fab,
-                                    Finish = part.Finish,
-                                    MarkNumber = part.MarkNumber,
-                                    Length = partLength,
-                                    IsVertical = componentType == "Vertical",
-                                    IsShopUse = part.IsShopUse
-                                };
-
-                                // Add to collection
-                                allParts.Add(partInfo);
-                            }
-                        }
-                    }
-
-                    // Process attachments to associate them with parts
-                    foreach (Attachment attachment in allAttachments)
-                    {
-                        if (partsByComponentHandle.TryGetValue(attachment.VerticalHandle, out List<ChildPart> verticalParts))
-                        {
-                            // Find matching vertical part
-                            foreach (ChildPart vertPart in verticalParts.Where(p => p.PartType == attachment.VerticalPartType))
-                            {
-                                // Find the corresponding PartInfo
-                                PartInfo vertPartInfo = allParts.FirstOrDefault(pi =>
-                                    pi.PartNumber == vertPart.Name &&
-                                    pi.Fab == vertPart.Fab &&
-                                    pi.MarkNumber == vertPart.MarkNumber);
-
-                                if (vertPartInfo != null &&
-                                    partsByComponentHandle.TryGetValue(attachment.HorizontalHandle, out List<ChildPart> horizontalParts))
-                                {
-                                    // Find matching horizontal part
-                                    ChildPart horizPart = horizontalParts.FirstOrDefault(p =>
-                                        p.PartType == attachment.HorizontalPartType);
-
-                                    if (horizPart != null)
-                                    {
-                                        // Add attachment information
-                                        vertPartInfo.Attachments.Add(new AttachmentInfo
-                                        {
-                                            Side = attachment.Side,
-                                            Position = attachment.Position,
-                                            Height = attachment.Height,
-                                            Invert = attachment.Invert,
-                                            AttachedPartNumber = horizPart.Name,
-                                            AttachedFab = horizPart.Fab
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    tr.Commit();
-                }
-                catch (System.Exception ex)
-                {
-                    ed.WriteMessage($"\nError collecting part data: {ex.Message}");
-                    tr.Abort();
-                    throw;
-                }
-            }
-
-            return allParts;
-        }
-
-        /// <summary>
-        /// Loads attachments data from the drawing's named dictionary
-        /// </summary>
-        private List<Attachment> LoadAttachmentsFromDrawing()
-        {
-            List<Attachment> attachments = new List<Attachment>();
-            Document doc = Application.DocumentManager.MdiActiveDocument;
-            Database db = doc.Database;
-            Editor ed = doc.Editor;
-
-            using (Transaction tr = db.TransactionManager.StartTransaction())
-            {
-                try
-                {
-                    // Get named objects dictionary
-                    DBDictionary nod = (DBDictionary)tr.GetObject(db.NamedObjectsDictionaryId, OpenMode.ForRead);
-
-                    // Check if attachment entry exists
-                    const string dictName = "METALATTACHMENTS";
-                    if (nod.Contains(dictName))
-                    {
-                        DBObject obj = tr.GetObject(nod.GetAt(dictName), OpenMode.ForRead);
-                        if (obj is Xrecord xrec && xrec.Data != null)
-                        {
-                            TypedValue[] values = xrec.Data.AsArray();
-                            if (values.Length > 0 && values[0].TypeCode == (int)DxfCode.Text)
-                            {
-                                string json = values[0].Value.ToString();
-                                attachments = JsonConvert.DeserializeObject<List<Attachment>>(json);
-                                ed.WriteMessage($"\nLoaded {attachments.Count} attachments from drawing.");
-                            }
-                        }
-                    }
-                    else
-                    {
-                        ed.WriteMessage("\nNo METALATTACHMENTS dictionary found in drawing.");
-                    }
-
-                    tr.Commit();
-                }
-                catch (System.Exception ex)
-                {
-                    ed.WriteMessage($"\nError loading attachments: {ex.Message}");
-                    tr.Abort();
-                }
-            }
-
-            return attachments;
-        }
-
-        /// <summary>
-        /// Gets all metal components (polylines with METALCOMP xdata) from the drawing
-        /// </summary>
-        private List<Entity> GetAllMetalComponents(Database db, Transaction tr, Editor editor)
-        {
-            List<Entity> components = new List<Entity>();
-
-            // Get all polylines in the drawing that might be metal components
-            TypedValue[] filterList = new TypedValue[] {
-                new TypedValue((int)DxfCode.Start, "LWPOLYLINE")
-            };
-
-            SelectionFilter filter = new SelectionFilter(filterList);
-            PromptSelectionResult selRes = editor.SelectAll(filter);
-
-            if (selRes.Status == PromptStatus.OK)
-            {
-                foreach (ObjectId id in selRes.Value.GetObjectIds())
-                {
-                    Entity ent = (Entity)tr.GetObject(id, OpenMode.ForRead);
-                    // Check if this has metal component xdata
-                    if (ent.GetXDataForApplication("METALCOMP") != null)
-                    {
-                        components.Add(ent);
-                    }
-                }
-            }
-
-            return components;
-        }
-
-        /// <summary>
-        /// Gets the component type from entity XData
-        /// </summary>
-        private string GetComponentType(Entity ent)
-        {
-            // Get component type from Xdata
-            ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
-            if (rbComp != null)
-            {
-                TypedValue[] tvs = rbComp.AsArray();
-                if (tvs.Length > 1 && tvs[1].TypeCode == (int)DxfCode.ExtendedDataAsciiString)
-                {
-                    return tvs[1].Value.ToString();
-                }
-            }
-            return null;
-        }
-
-        /// <summary>
-        /// Gets child parts from entity XData
-        /// </summary>
-        private List<ChildPart> GetChildParts(Entity ent)
-        {
-            List<ChildPart> result = new List<ChildPart>();
-
-            // Get info about parts chunks
-            int numChunks = 0;
-            ResultBuffer rbInfo = ent.GetXDataForApplication("METALPARTSINFO");
-            if (rbInfo != null)
-            {
-                TypedValue[] infoValues = rbInfo.AsArray();
-                foreach (TypedValue tv in infoValues)
-                {
-                    if (tv.TypeCode == (int)DxfCode.ExtendedDataInteger32)
-                    {
-                        numChunks = Convert.ToInt32(tv.Value);
-                        break;
-                    }
-                }
-            }
-
-            // Build JSON string from chunks if chunks exist
-            if (numChunks > 0)
-            {
-                StringBuilder jsonBuilder = new StringBuilder();
-                for (int i = 0; i < numChunks; i++)
-                {
-                    string appName = $"METALPARTS{i}";
-                    ResultBuffer rbChunk = ent.GetXDataForApplication(appName);
-                    if (rbChunk != null)
-                    {
-                        TypedValue[] chunkValues = rbChunk.AsArray();
-                        foreach (TypedValue tv in chunkValues)
-                        {
-                            if (tv.TypeCode == (int)DxfCode.ExtendedDataAsciiString)
-                            {
-                                jsonBuilder.Append(tv.Value.ToString());
-                            }
-                        }
-                    }
-                }
-
-                // Parse the complete JSON
-                if (jsonBuilder.Length > 0)
-                {
-                    try
-                    {
-                        result = JsonConvert.DeserializeObject<List<ChildPart>>(jsonBuilder.ToString());
-                    }
-                    catch (System.Exception ex)
-                    {
-                        Document doc = Application.DocumentManager.MdiActiveDocument;
-                        Editor ed = doc.Editor;
-                        ed.WriteMessage($"\nError parsing child parts JSON: {ex.Message}");
-                    }
-                }
-            }
-
-            return result;
-        }
-
-        /// <summary>
-        /// Calculates the length of a part based on component geometry and part properties
-        /// </summary>
-        private double CalculatePartLength(Entity component, ChildPart part)
-        {
-            // In a real implementation, this would calculate based on:
-            // - Component geometry length
-            // - Part's length adjustment value
-            // - Start/end adjustments
-
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
 
             try
             {
-                // Extract basic length from polyline geometry
-                double baseLength = 0;
+                // Get all components with attachments
+                List<DrawingComponentManager.Component> components =
+                    DrawingComponentManager.Instance.GetComponentsWithAttachments();
 
-                if (component is Polyline pline)
-                {
-                    baseLength = pline.Length;
-                }
-                else if (component is Polyline2d pline2d)
-                {
-                    baseLength = pline2d.Length;
-                }
-                else if (component is Polyline3d pline3d)
-                {
-                    baseLength = pline3d.Length;
-                }
+                ed.WriteMessage($"\nFound {components.Count} metal components in drawing.");
 
-                // Apply adjustments
-                double adjustedLength = baseLength + part.LengthAdjustment;
-                adjustedLength = adjustedLength + part.StartAdjustment + part.EndAdjustment;
+                // Convert to PartInfo objects
+                foreach (var comp in components)
+                {
+                    foreach (var part in comp.Parts)
+                    {
+                        // Skip parts with missing essential information
+                        if (string.IsNullOrEmpty(part.Fab) || string.IsNullOrEmpty(part.Name))
+                            continue;
 
-                return adjustedLength;
+                        // Calculate part length correctly
+                        double partLength;
+                        if (part.IsFixedLength)
+                        {
+                            partLength = part.FixedLength;
+                        }
+                        else
+                        {
+                            partLength = comp.Length + part.StartAdjustment + part.EndAdjustment;
+                        }
+
+                        // Create part info
+                        PartInfo partInfo = new PartInfo
+                        {
+                            PartNumber = part.Name,
+                            PartType = part.PartType,
+                            Fab = part.Fab,
+                            Finish = part.Finish,
+                            MarkNumber = part.MarkNumber,
+                            Length = partLength,
+                            IsVertical = comp.Type == "Vertical",
+                            IsShopUse = part.IsShopUse
+                        };
+
+                        // Add attachments
+                        foreach (var attachment in part.Attachments)
+                        {
+                            partInfo.Attachments.Add(new AttachmentInfo
+                            {
+                                Side = attachment.Side,
+                                Position = attachment.Position,
+                                Height = attachment.Height,
+                                Invert = attachment.Invert,
+                                AttachedPartNumber = attachment.AttachedPartNumber,
+                                AttachedFab = attachment.AttachedFab
+                            });
+                        }
+
+                        allParts.Add(partInfo);
+                    }
+                }
             }
-            catch
+            catch (System.Exception ex)
             {
-                // Fallback to fixed length or default
-                return part.IsFixedLength ? part.FixedLength : 60.0;
+                ed.WriteMessage($"\nError collecting part data: {ex.Message}");
+                throw;
             }
+
+            return allParts;
         }
+
+
 
         #endregion
 
@@ -1045,6 +771,11 @@ namespace TakeoffBridge
                         // Process attachments if this is a vertical part
                         if (isVertical)
                         {
+                            Point3d? templateWorkPoint = WorkPointManager.GetWorkPoint(db, tr);
+                            if (templateWorkPoint.HasValue)
+                            {
+                                ed.WriteMessage($"\nTemplate workpoint found: ({templateWorkPoint.Value.X}, {templateWorkPoint.Value.Y}, {templateWorkPoint.Value.Z})");
+                            }
                             // Process each part's attachments
                             foreach (var part in parts)
                             {
@@ -1167,11 +898,33 @@ namespace TakeoffBridge
             // For vertical tickets, adjust the starting position and max rows
             double startY = isVertical ? TableStartY - (TableRowHeight * (MaxRowsPerTicket)) : TableStartY;
             int maxRows = isVertical ? 1 : MaxRowsPerTicket;
-
             double currentY = startY;
-            int row = 1;
 
-            foreach (PartInfo part in parts)
+            // Group parts by mark number and sum quantities
+            var groupedParts = parts
+                .GroupBy(p => new {
+                    p.MarkNumber,
+                    p.Length,
+                    p.IsShopUse
+                    // Add any other properties that should be identical for grouping
+                })
+                .Select(group => new {
+                    MarkNumber = group.Key.MarkNumber,
+                    Length = group.Key.Length,
+                    IsShopUse = group.Key.IsShopUse,
+                    Quantity = group.Count(), // Count of identical parts
+                                              // You could also sum other numeric properties here if needed
+                                              // Example: TotalWeight = group.Sum(p => p.Weight)
+
+
+                })
+                .ToList();
+
+            // Sort the grouped parts if needed
+            // groupedParts = groupedParts.OrderBy(p => p.MarkNumber).ToList();
+
+            int row = 1;
+            foreach (var part in groupedParts)
             {
                 // Don't exceed max rows per ticket
                 if (row > maxRows)
@@ -1181,14 +934,13 @@ namespace TakeoffBridge
                 AddDText(paperSpace, tr, part.MarkNumber, TableStartX + 0.3, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
 
                 // Length
-                string formattedLength = FormatLength(part.Length);
+                string formattedLength = FormatInches(part.Length);
                 AddDText(paperSpace, tr, formattedLength, TableStartX + 0.98, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
 
-                // Quantity (placeholder - would come from database in real implementation)
-                AddDText(paperSpace, tr, "1", TableStartX + 2.214, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
+                // Quantity - now using the count from grouping
+                AddDText(paperSpace, tr, part.Quantity.ToString(), TableStartX + 2.214, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
 
-                // Elevation (placeholder - would come from database in real implementation)
-                AddDText(paperSpace, tr, "1", TableStartX + 2.9203, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
+
 
                 // Shop use indicator
                 if (part.IsShopUse)
@@ -1204,6 +956,36 @@ namespace TakeoffBridge
                 // Move to next row
                 currentY -= TableRowHeight;
                 row++;
+            }
+        }
+
+        /// <summary>
+        /// Formats a length value into fractional inches without converting to feet
+        /// </summary>
+        private string FormatInches(double inches)
+        {
+            // Round to nearest 1/16 inch
+            int sixteenths = (int)Math.Round(inches * 16);
+            int wholeInches = sixteenths / 16;
+            int numerator = sixteenths % 16;
+
+            // Simplify fraction
+            int gcd = GCD(numerator, 16);
+            if (gcd > 0) // Avoid division by zero
+            {
+                numerator /= gcd;
+                int denominator = 16 / gcd;
+
+                // Format the result
+                if (numerator == 0)
+                    return $"{wholeInches}\"";
+                else
+                    return $"{wholeInches} {numerator}/{denominator}\"";
+            }
+            else
+            {
+                // No fraction part
+                return $"{wholeInches}\"";
             }
         }
 
@@ -1307,12 +1089,11 @@ namespace TakeoffBridge
                         continue;
                     }
 
-                    // Calculate position based on attachment data
-                    Point3d insertionPoint = CalculateAttachmentPosition(
-                        part.Length,
-                        attachment.Position,
-                        attachment.Height,
-                        attachment.Side);
+                    // Calculate position (workpoint in db will be origin, we use transforms for positioning)
+                    Point3d insertionPoint = Point3d.Origin;
+
+                    // Store the workpoint in the database (where the parts will be attached)
+                    WorkPointManager.StoreWorkPoint(db, tr, insertionPoint);
 
                     // Insert the attachment part
                     InsertAttachmentPart(
@@ -1323,7 +1104,10 @@ namespace TakeoffBridge
                         attachment.AttachedPartNumber,
                         insertionPoint,
                         attachment.Side,
-                        attachment.Invert);
+                        attachment.Invert,
+                        attachment.Position,
+                        attachment.Height,
+                        part.Length);
                 }
 
                 // Add attachment information to attachment table (in paper space)
@@ -1347,35 +1131,123 @@ namespace TakeoffBridge
             string partNumber,
             Point3d insertionPoint,
             string side,
-            bool invert)
+            bool invert,
+            double position,
+            double height,
+            double mainPartLength)
         {
             try
             {
+                // Get mullion data from the database
+                MullionPlacementData calculatedData = CalculateMullionDimensions(db, tr);
+                MullionPlacementData storedData = MullionPlacementData.GetMullionData(db, tr);
+                // Use calculated dimensions if available, otherwise fall back to stored or default values
+                double mullionWidth = calculatedData.Width > 0 ? calculatedData.Width :
+                              (storedData != null ? storedData.Width : 2.5);
+
+                double overallWidth = calculatedData.OverallWidth > 0 ? calculatedData.OverallWidth :
+                                      (storedData != null ? storedData.OverallWidth : 4.5);
+
+                // For glass pocket offset, prefer stored value as it can't be reliably calculated
+                double glassPocketOffset = storedData != null ? storedData.GlassPocketOffset : 1.25;
+
+                System.Diagnostics.Debug.WriteLine($"Using mullion data: Width = {mullionWidth}, Glass Pocket Offset = {glassPocketOffset}, Overall Width = {overallWidth}");
+
                 // Create Drawfab instance for this part
                 Drawfab drawfab = new Drawfab(partNumber);
 
                 // Determine handed parameters based on side and invert
                 bool handed = (side == "L" || side == "R");
-                string handedSide = side;
+                string handedSide = "R";
 
-                // Create transformation matrix for positioning
+                // Calculate the scaled position along the vertical
+                double templateLength = 30.0;
+                double relativePosition = (height / mainPartLength) * templateLength;
+
+                // Special handling for parts within 3 inches of the bottom
+                if (height <= 3.0)
+                {
+                    // Position at the bottom of the vertical
+                    relativePosition = mullionWidth;
+                }
+
+                // Special handling for parts within 3 inches of the top
+                if (height >= (mainPartLength - 3.0))
+                {
+                    // Position at the top of the vertical
+                    relativePosition = templateLength;
+                }
+
+                // Calculate offsets based on side and mullion data
+                double yOffset = overallWidth - glassPocketOffset; // Same Y offset for both sides
+                double zOffset = 0;
+
+                // Z offset depends on side
+                if (side == "R")
+                {
+                    zOffset = -mullionWidth / 2; // Right side
+                }
+                else if (side == "L")
+                {
+                    zOffset = mullionWidth / 2; // Left side
+                }
+
+                // For vertical orientation, X is position along vertical, Y is glass pocket offset, Z is width offset
                 Matrix3d transform = Matrix3d.Displacement(
-                    new Vector3d(insertionPoint.X, insertionPoint.Y, insertionPoint.Z));
+                    new Vector3d(-relativePosition, yOffset, zOffset));
+
+                // Create a matrix for potential mirroring
+                Matrix3d mirrorTransform = Matrix3d.Identity;
+
+                // If it's a left-side part, create a mirror transformation
+                if (side == "L")
+                {
+                    // Create a mirror line that runs along the X axis through the center
+                    // of the part (at 0,0,0 in local coordinates)
+                    Point3d mirrorBase = new Point3d(0, 0, mullionWidth / 2);
+                    Vector3d mirrorNormal = Vector3d.ZAxis; // Mirror across the XZ plane
+                    mirrorTransform = Matrix3d.Mirroring(new Plane(mirrorBase, mirrorNormal));
+
+                    // Apply mirror transform to our positioning transform
+                    transform = transform.PreMultiplyBy(mirrorTransform);
+
+                    System.Diagnostics.Debug.WriteLine("Applied mirror transformation for left side");
+                }
+
+                // Calculate the middle of the part after initial positioning
+                // This would be after your initial transform calculation but before applying inversion
+                Point3d partMiddle = new Point3d(-relativePosition, yOffset, zOffset);
+
+                // After your existing transform and mirror code, before creating the part
+                // Apply inversion if requested (mirror around Y axis)
+                if (invert)
+                {
+                    // Create a mirror line that runs along the Y axis through the center
+                    // of the part in world coordinate space
+                    Point3d mirrorBase = new Point3d(1, 0, 0);
+                    Vector3d mirrorNormal = Vector3d.XAxis; // Mirror across the YZ plane (around Y axis)
+                    Matrix3d invertTransform = Matrix3d.Mirroring(new Plane(mirrorBase, mirrorNormal));
+
+                    // Apply invert transform to our positioning transform
+                    transform = transform.PreMultiplyBy(invertTransform);
+
+                    System.Diagnostics.Debug.WriteLine("Applied inversion transformation");
+                }
 
                 // Create the attachment part
                 drawfab.CreateExtrudedPart(
-                    db,              // Use the current database
-                    partPath,        // Path to the part drawing
-                    partNumber,      // Block name
-                    0,               // Length 0 for attachments
-                    90, 90, 90, 90,  // Standard angles
-                    handed,          // Whether it's a handed part
-                    handedSide,      // Which side (L/R)
-                    transform,       // Position transformation
-                    false,           // preserveOriginalOrientation
-                    false,           // visualizeOnly
-                    true,            // addDimensions
-                    true);           // isVertical = true for attachments
+                    db,                // Use the current database
+                    partPath,          // Path to the part drawing
+                    partNumber,        // Block name
+                    0,                 // Length 0 for attachments
+                    90, 90, 90, 90,    // Standard angles
+                    handed,            // Whether it's a handed part
+                    handedSide,        // Which side (L/R)
+                    transform,         // Position transformation
+                    false,             // preserveOriginalOrientation
+                    false,             // visualizeOnly
+                    false,             // no dimensions for attachments
+                    true);             // isVertical = true for attachments
             }
             catch (System.Exception ex)
             {
@@ -1383,38 +1255,6 @@ namespace TakeoffBridge
                 throw;
             }
         }
-
-        /// <summary>
-        /// Calculates the position for an attachment based on its parameters
-        /// </summary>
-        private Point3d CalculateAttachmentPosition(double mainPartLength, double position, double height, string side)
-        {
-            // Using coordinates from VBA code
-            double x = position;
-            double y = 0;
-
-            // Adjust based on side
-            if (side == "L")
-            {
-                y = -2.5; // Left side position
-            }
-            else if (side == "R")
-            {
-                y = 2.5;  // Right side position
-            }
-
-            // Adjust for height
-            double z = height;
-
-            // Scale position based on main part length
-            // (In actual implementation, this would be more sophisticated)
-            double scaleFactor = 30.0 / mainPartLength; // Assuming 30" template
-            x *= scaleFactor;
-
-            return new Point3d(x, y, z);
-        }
-
-        
 
         /// <summary>
         /// Adds attachment information to the attachment table in the ticket
@@ -1443,31 +1283,114 @@ namespace TakeoffBridge
                 // Part number
                 AddDText(paperSpace, tr, attachment.AttachedPartNumber, tableX, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
 
-                // Fab
-                AddDText(paperSpace, tr, attachment.AttachedFab, tableX + 1.25, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
-
                 // Side
-                AddDText(paperSpace, tr, attachment.Side, tableX + 1.65, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
+                AddDText(paperSpace, tr, attachment.Side, tableX + 1.25, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
 
                 // Position
-                string formattedPosition = FormatLength(attachment.Position);
-                AddDText(paperSpace, tr, formattedPosition, tableX + 2.05, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
+                string formattedPosition = FormatInches(attachment.Height);
+                AddDText(paperSpace, tr, formattedPosition, tableX + 1.6875, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
 
                 // Height
-                string formattedHeight = FormatLength(attachment.Height);
-                AddDText(paperSpace, tr, formattedHeight, tableX + 2.925, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
+                string fab = attachment.AttachedFab;
+                AddDText(paperSpace, tr, fab, tableX + 2.5625, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
 
                 // Invert indicator
                 if (attachment.Invert)
                 {
-                    AddDText(paperSpace, tr, "X", tableX + 4.05, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
+                    AddDText(paperSpace, tr, "X", tableX + 3.625, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
                 }
             }
+        }
+
+        /// <summary>
+        /// Calculates the actual dimensions of the vertical mullion from the model space
+        /// </summary>
+        private MullionPlacementData CalculateMullionDimensions(Database db, Transaction tr)
+        {
+            MullionPlacementData data = new MullionPlacementData();
+
+            try
+            {
+                // Get the model space
+                BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                BlockTableRecord ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+
+                // Look for the extruded solids (the vertical mullion)
+                Extents3d extents = new Extents3d();
+                bool foundExtrusion = false;
+
+                foreach (ObjectId id in ms)
+                {
+                    DBObject obj = tr.GetObject(id, OpenMode.ForRead);
+
+                    // Check for 3D solids or regions
+                    if (obj is Solid3d solid)
+                    {
+                        extents.AddExtents(solid.GeometricExtents);
+                        foundExtrusion = true;
+                    }
+                    else if (obj is Region region)
+                    {
+                        extents.AddExtents(region.GeometricExtents);
+                        foundExtrusion = true;
+                    }
+                }
+
+                if (!foundExtrusion)
+                {
+                    // No extrusions found, check for named block references (the vertical mullion)
+                    foreach (ObjectId id in ms)
+                    {
+                        DBObject obj = tr.GetObject(id, OpenMode.ForRead);
+                        if (obj is BlockReference blockRef)
+                        {
+                            // Check if this is our vertical mullion block
+                            BlockTableRecord btr = (BlockTableRecord)tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead);
+                            if (btr.Name.Contains("VG") || btr.Name.Contains("VM")) // Adjust the pattern as needed
+                            {
+                                extents.AddExtents(blockRef.GeometricExtents);
+                                foundExtrusion = true;
+                            }
+                        }
+                    }
+                }
+
+                if (foundExtrusion)
+                {
+                    // Calculate width (Z dimension in world coords)
+                    data.Width = Math.Abs(extents.MaxPoint.Z - extents.MinPoint.Z);
+
+                    // Calculate overall width (Y dimension in world coords)
+                    data.OverallWidth = Math.Abs(extents.MaxPoint.Y - extents.MinPoint.Y);
+
+                    // For glass pocket offset, we'll use our defaults or any stored data
+                    // since we can't directly determine it from the geometry
+                    MullionPlacementData storedData = MullionPlacementData.GetMullionData(db, tr);
+                    if (storedData != null)
+                    {
+                        data.GlassPocketOffset = storedData.GlassPocketOffset;
+                    }
+
+                    System.Diagnostics.Debug.WriteLine($"Calculated mullion dimensions: Width={data.Width}, OverallWidth={data.OverallWidth}, GlassPocketOffset={data.GlassPocketOffset}");
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("No vertical mullion found in model space, using default dimensions");
+                }
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error calculating mullion dimensions: {ex.Message}");
+            }
+
+            return data;
         }
 
         #endregion
 
     }
+
+
 
     /// <summary>
     /// Extension methods for AutoCAD entities

@@ -314,89 +314,6 @@ namespace TakeoffBridge
             }
         }
 
-        //// Handle object appended event
-        //private void Database_ObjectAppended(object sender, ObjectEventArgs e)
-        //{
-        //    try
-        //    {
-        //        // Skip if not from current document
-        //        Document doc = Application.DocumentManager.MdiActiveDocument;
-        //        if (doc == null) return;
-
-        //        Database eventDb = sender as Database;
-        //        if (eventDb != doc.Database) return;
-
-        //        // Skip if suppressed
-        //        if (_suppressEvents) return;
-
-        //        // Get the object ID for later use
-        //        ObjectId objId = e.DBObject.ObjectId;
-
-        //        // Schedule processing for after the transaction completes
-        //        Application.Idle += delegate
-        //        {
-        //            Application.Idle -= delegate { };
-
-        //            try
-        //            {
-        //                _suppressEvents = true;
-
-        //                // Process the component directly
-        //                using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
-        //                {
-        //                    // Check if the object is still valid
-        //                    if (!objId.IsValid || objId.IsErased)
-        //                    {
-        //                        tr.Commit();
-        //                        _suppressEvents = false;
-        //                        return;
-        //                    }
-
-        //                    // Process the component
-        //                    ProcessComponentMarkNumbers(objId, tr);
-        //                    tr.Commit();
-        //                }
-
-        //                _suppressEvents = false;
-        //            }
-        //            catch (System.Exception ex)
-        //            {
-        //                System.Diagnostics.Debug.WriteLine($"Error in Idle handler: {ex.Message}");
-        //                _suppressEvents = false;
-        //            }
-        //        };
-        //    }
-        //    catch (System.Exception ex)
-        //    {
-        //        System.Diagnostics.Debug.WriteLine($"Error in ObjectAppended: {ex.Message}");
-        //    }
-        //}
-
-        //// Handle object erased event
-        //private void Database_ObjectErased(object sender, ObjectErasedEventArgs e)
-        //{
-        //    // We don't need to update mark numbers when an object is erased,
-        //    // but we might want to clean up our cache of processed entities
-        //    if (e.Erased)
-        //    {
-        //        try
-        //        {
-        //            // Get the handle of the erased object
-        //            string handle = e.DBObject.Handle.ToString();
-
-        //            // Remove from our processed set if it exists
-        //            _processedEntities.Remove(handle);
-        //        }
-        //        catch (System.Exception ex)
-        //        {
-        //            System.Diagnostics.Debug.WriteLine($"Error in ObjectErased: {ex.Message}");
-        //        }
-        //    }
-        //}
-
-        
-
-       
 
         // Called when intersections are recalculated
         public void OnIntersectionsRecalculated(List<ObjectId> verticalIds)
@@ -425,80 +342,68 @@ namespace TakeoffBridge
             _nextMarkNumbers.Clear();
             _processedEntities.Clear();
 
-            // Start a transaction to read the drawing
-            using (Transaction tr = _db.TransactionManager.StartTransaction())
+            // Get components with parts using the centralized manager
+            List<DrawingComponentManager.Component> components =
+                DrawingComponentManager.Instance.GetComponentsWithAttachments();
+
+            foreach (var comp in components)
             {
-                // Get all polylines in the drawing
-                TypedValue[] tvs = new TypedValue[] {
-                    new TypedValue((int)DxfCode.Start, "LWPOLYLINE")
-                };
+                string handle = comp.Handle;
+                string componentType = comp.Type;
+                double length = comp.Length;
 
-                SelectionFilter filter = new SelectionFilter(tvs);
-                PromptSelectionResult selRes = Application.DocumentManager.MdiActiveDocument.Editor.SelectAll(filter);
-
-                if (selRes.Status == PromptStatus.OK)
+                // Process each part
+                foreach (var part in comp.Parts)
                 {
-                    SelectionSet ss = selRes.Value;
-
-                    foreach (SelectedObject selObj in ss)
+                    if (!string.IsNullOrEmpty(part.MarkNumber))
                     {
-                        ObjectId id = selObj.ObjectId;
-                        Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
-
-                        if (ent != null)
+                        // Parse mark number to get the numeric part
+                        string[] markParts = part.MarkNumber.Split('-');
+                        if (markParts.Length == 2 && int.TryParse(markParts[1], out int markNumber))
                         {
-                            // Check if this entity has metal component data
-                            string componentType = GetComponentType(ent);
-
-                            if (!string.IsNullOrEmpty(componentType))
+                            // Track the highest mark number for each part type
+                            string partType = markParts[0];
+                            if (!_nextMarkNumbers.ContainsKey(partType) || _nextMarkNumbers[partType] <= markNumber)
                             {
-                                // Get child parts
-                                List<ChildPart> childParts = GetChildParts(ent);
-                                string handle = ent.Handle.ToString();
+                                _nextMarkNumbers[partType] = markNumber + 1;
+                            }
 
-                                // Store in cache for each part with a mark number
-                                foreach (var part in childParts)
+                            // Calculate actual length
+                            double actualLength = part.IsFixedLength ? part.FixedLength :
+                                                  length + part.StartAdjustment + part.EndAdjustment;
+
+                            // Generate and store unique keys
+                            if (componentType == "Horizontal")
+                            {
+                                string uniqueKey = GenerateHorizontalPartKey(part, actualLength);
+                                _horizontalPartMarks[uniqueKey] = part.MarkNumber;
+                            }
+                            else if (componentType == "Vertical")
+                            {
+                                // Convert attachments to the format expected by GenerateVerticalPartKey
+                                List<Attachment> attachments = new List<Attachment>();
+                                foreach (var attachment in part.Attachments)
                                 {
-                                    if (!string.IsNullOrEmpty(part.MarkNumber))
+                                    attachments.Add(new Attachment
                                     {
-                                        // Parse mark number to get the numeric part
-                                        string[] markParts = part.MarkNumber.Split('-');
-                                        if (markParts.Length == 2 && int.TryParse(markParts[1], out int markNumber))
-                                        {
-                                            // Track the highest mark number for each part type
-                                            string partType = markParts[0];
-                                            if (!_nextMarkNumbers.ContainsKey(partType) || _nextMarkNumbers[partType] <= markNumber)
-                                            {
-                                                _nextMarkNumbers[partType] = markNumber + 1;
-                                            }
-
-                                            // Generate the unique key for this part
-                                            double length = (ent is Polyline) ? ((Polyline)ent).Length : 0;
-                                            double actualLength = CalculateActualPartLength(part, length);
-
-                                            if (componentType == "Horizontal")
-                                            {
-                                                string uniqueKey = GenerateHorizontalPartKey(part, actualLength);
-                                                _horizontalPartMarks[uniqueKey] = part.MarkNumber;
-                                            }
-                                            else if (componentType == "Vertical")
-                                            {
-                                                var attachments = GetAttachmentsForComponent(handle, true, tr);
-                                                string uniqueKey = GenerateVerticalPartKey(part, actualLength, attachments);
-                                                _verticalPartMarks[uniqueKey] = part.MarkNumber;
-                                            }
-                                        }
-                                    }
+                                        HorizontalPartType = attachment.AttachedPartType,
+                                        Side = attachment.Side,
+                                        Position = attachment.Position,
+                                        Height = attachment.Height,
+                                        Invert = attachment.Invert,
+                                        Adjust = attachment.Adjust
+                                    });
                                 }
 
-                                // Add to processed entities
-                                _processedEntities.Add(handle);
+                                string uniqueKey = GenerateVerticalPartKey(part, actualLength, attachments);
+                                _verticalPartMarks[uniqueKey] = part.MarkNumber;
                             }
                         }
                     }
-                }
 
-                tr.Commit();
+                    // Add to processed entities
+                    _processedEntities.Add(handle);
+                }
             }
 
             // Log how many mark numbers we loaded
@@ -560,7 +465,7 @@ namespace TakeoffBridge
                 }
 
                 string handle = ent.Handle.ToString();
-                
+
 
                 // Check if we're already processing this handle to prevent recursion
                 if (_currentlyProcessingHandles.Contains(handle))
@@ -573,123 +478,124 @@ namespace TakeoffBridge
                 _currentlyProcessingHandles.Add(handle);
 
                 System.Diagnostics.Debug.WriteLine($"Processing mark numbers for entity with handle: {handle}");
-                try { 
-
-                string componentType = GetComponentType(ent, tr);
-                if (string.IsNullOrEmpty(componentType))
+                try
                 {
-                    System.Diagnostics.Debug.WriteLine($"No component type for {handle}");
-                    return;
-                }
 
-                List<ChildPart> childParts = GetChildParts(ent, tr);
-                if (childParts.Count == 0)
-                {
-                    System.Diagnostics.Debug.WriteLine($"No child parts for {handle}");
-                    return;
-                }
-                System.Diagnostics.Debug.WriteLine($"Found {childParts.Count} parts");
-
-                // Get the current length
-                double currentLength = 0;
-                if (ent is Polyline)
-                {
-                    Polyline pline = ent as Polyline;
-                    currentLength = pline.Length;
-                }
-                System.Diagnostics.Debug.WriteLine($"Part is {currentLength} long");
-
-                // Check if length has changed
-                bool lengthChanged = false;
-                if (_lastComponentLengths.ContainsKey(handle))
-                {
-                    double lastLength = _lastComponentLengths[handle];
-                    lengthChanged = Math.Abs(lastLength - currentLength) > 0.001;
-
-                    if (lengthChanged)
+                    string componentType = GetComponentType(ent, tr);
+                    if (string.IsNullOrEmpty(componentType))
                     {
-                        System.Diagnostics.Debug.WriteLine($"Length changed for {handle}: {lastLength} -> {currentLength}");
+                        System.Diagnostics.Debug.WriteLine($"No component type for {handle}");
+                        return;
                     }
-                }
 
-                // Store current length
-                _lastComponentLengths[handle] = currentLength;
-
-                // Only process if this is a new component (not in our cache)
-                // or if the length has changed
-                // or if forceProcess is true
-                bool isNewComponent = !_processedEntities.Contains(handle);
-
-                // We'll always process marks for all parts, but our decision to modify the
-                // entity will depend on whether any mark numbers changed
-                bool shouldProcessMarks = isNewComponent || lengthChanged || forceProcess;
-
-                if (shouldProcessMarks)
-                {
-                    System.Diagnostics.Debug.WriteLine($"Processing marks for {handle}: {(isNewComponent ? "new component" : forceProcess ? "forced update" : "length changed")}");
-
-                    bool markNumbersChanged = false;
-
-                    foreach (var part in childParts)
+                    List<ChildPart> childParts = GetChildParts(ent, tr);
+                    if (childParts.Count == 0)
                     {
-                        // Skip shop use parts
-                        //if (part.IsShopUse) continue;
+                        System.Diagnostics.Debug.WriteLine($"No child parts for {handle}");
+                        return;
+                    }
+                    System.Diagnostics.Debug.WriteLine($"Found {childParts.Count} parts");
 
-                        // Calculate actual length
-                        double actualLength = CalculateActualPartLength(part, currentLength);
+                    // Get the current length
+                    double currentLength = 0;
+                    if (ent is Polyline)
+                    {
+                        Polyline pline = ent as Polyline;
+                        currentLength = pline.Length;
+                    }
+                    System.Diagnostics.Debug.WriteLine($"Part is {currentLength} long");
 
-                        // Store original mark number for comparison
-                        string oldMarkNumber = part.MarkNumber;
+                    // Check if length has changed
+                    bool lengthChanged = false;
+                    if (_lastComponentLengths.ContainsKey(handle))
+                    {
+                        double lastLength = _lastComponentLengths[handle];
+                        lengthChanged = Math.Abs(lastLength - currentLength) > 0.001;
 
-                        // Generate mark number based on component type
-                        if (componentType == "Horizontal")
+                        if (lengthChanged)
                         {
-                            string uniqueKey = GenerateHorizontalPartKey(part, actualLength);
-                            System.Diagnostics.Debug.WriteLine($"  Horizontal key for {part.Name}: {uniqueKey}");
-                            part.MarkNumber = GetOrCreateMarkNumber(uniqueKey, part.PartType, _horizontalPartMarks);
-                        }
-                        else if (componentType == "Vertical")
-                        {
-                            var attachments = GetAttachmentsForComponent(handle, true, tr);
-                            string uniqueKey = GenerateVerticalPartKey(part, actualLength, attachments);
-                            System.Diagnostics.Debug.WriteLine($"  Vertical key for {part.Name}: {uniqueKey}");
-                            part.MarkNumber = GetOrCreateMarkNumber(uniqueKey, part.PartType, _verticalPartMarks);
-                        }
-
-                        // Check if mark number changed
-                        if (oldMarkNumber != part.MarkNumber)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"  Mark number changed for {part.Name}: {oldMarkNumber} -> {part.MarkNumber}");
-                            markNumbersChanged = true;
+                            System.Diagnostics.Debug.WriteLine($"Length changed for {handle}: {lastLength} -> {currentLength}");
                         }
                     }
 
-                    // If any mark numbers changed, save the updated child parts
-                    if (markNumbersChanged)
+                    // Store current length
+                    _lastComponentLengths[handle] = currentLength;
+
+                    // Only process if this is a new component (not in our cache)
+                    // or if the length has changed
+                    // or if forceProcess is true
+                    bool isNewComponent = !_processedEntities.Contains(handle);
+
+                    // We'll always process marks for all parts, but our decision to modify the
+                    // entity will depend on whether any mark numbers changed
+                    bool shouldProcessMarks = isNewComponent || lengthChanged || forceProcess;
+
+                    if (shouldProcessMarks)
                     {
-                        // Need to close entity opened for read
-                        ent.Dispose();
+                        System.Diagnostics.Debug.WriteLine($"Processing marks for {handle}: {(isNewComponent ? "new component" : forceProcess ? "forced update" : "length changed")}");
 
-                        // Re-open for write
-                        Entity entForWrite = tr.GetObject(entityId, OpenMode.ForWrite) as Entity;
-                        string json = JsonConvert.SerializeObject(childParts);
-                        SaveChildPartsToEntity(entForWrite, json, tr);
+                        bool markNumbersChanged = false;
 
-                        System.Diagnostics.Debug.WriteLine($"Mark numbers saved for {handle}");
+                        foreach (var part in childParts)
+                        {
+                            // Skip shop use parts
+                            //if (part.IsShopUse) continue;
 
-                        // Update our cache
-                        _processedEntities.Add(handle);
+                            // Calculate actual length
+                            double actualLength = CalculateActualPartLength(part, currentLength);
+
+                            // Store original mark number for comparison
+                            string oldMarkNumber = part.MarkNumber;
+
+                            // Generate mark number based on component type
+                            if (componentType == "Horizontal")
+                            {
+                                string uniqueKey = GenerateHorizontalPartKey(part, actualLength);
+                                System.Diagnostics.Debug.WriteLine($"  Horizontal key for {part.Name}: {uniqueKey}");
+                                part.MarkNumber = GetOrCreateMarkNumber(uniqueKey, part.PartType, _horizontalPartMarks);
+                            }
+                            else if (componentType == "Vertical")
+                            {
+                                var attachments = GetAttachmentsForComponent(handle, true, tr);
+                                string uniqueKey = GenerateVerticalPartKey(part, actualLength, attachments);
+                                System.Diagnostics.Debug.WriteLine($"  Vertical key for {part.Name}: {uniqueKey}");
+                                part.MarkNumber = GetOrCreateMarkNumber(uniqueKey, part.PartType, _verticalPartMarks);
+                            }
+
+                            // Check if mark number changed
+                            if (oldMarkNumber != part.MarkNumber)
+                            {
+                                System.Diagnostics.Debug.WriteLine($"  Mark number changed for {part.Name}: {oldMarkNumber} -> {part.MarkNumber}");
+                                markNumbersChanged = true;
+                            }
+                        }
+
+                        // If any mark numbers changed, save the updated child parts
+                        if (markNumbersChanged)
+                        {
+                            // Need to close entity opened for read
+                            ent.Dispose();
+
+                            // Re-open for write
+                            Entity entForWrite = tr.GetObject(entityId, OpenMode.ForWrite) as Entity;
+                            string json = JsonConvert.SerializeObject(childParts);
+                            SaveChildPartsToEntity(entForWrite, json, tr);
+
+                            System.Diagnostics.Debug.WriteLine($"Mark numbers saved for {handle}");
+
+                            // Update our cache
+                            _processedEntities.Add(handle);
 
 
-                                // Then update the display for this component
-                                MarkNumberDisplay.Instance.UpdateMarkNumbersForComponent(entityId);
+                            // Then update the display for this component
+                            MarkNumberDisplay.Instance.UpdateMarkNumbersForComponent(entityId);
 
                         }
-                    else
-                    {
-                        System.Diagnostics.Debug.WriteLine($"No mark numbers changed for {handle}");
+                        else
+                        {
+                            System.Diagnostics.Debug.WriteLine($"No mark numbers changed for {handle}");
+                        }
                     }
-                }
                     else
                     {
                         System.Diagnostics.Debug.WriteLine($"Skipping mark number processing for {handle}");
@@ -797,23 +703,7 @@ namespace TakeoffBridge
             }
         }
 
-        // Get an entity by its handle
-        private ObjectId GetEntityByHandle(string handle, Database db)
-        {
-            ObjectId result = ObjectId.Null;
-
-            try
-            {
-                Handle h = new Handle(Convert.ToInt64(handle, 16));
-                result = db.GetObjectId(false, h, 0);
-            }
-            catch
-            {
-                // Handle not found or invalid
-            }
-
-            return result;
-        }
+        
 
         // Get the component type from an entity - made internal for use by commands
         internal string GetComponentType(Entity ent, Transaction tr = null)
@@ -965,50 +855,6 @@ namespace TakeoffBridge
             }
         }
 
-        // Get component length
-
-        private double GetComponentLength(ObjectId entityId, Transaction tr = null)
-        {
-            double length = 0;
-            bool ownsTransaction = (tr == null);
-
-            try
-            {
-                if (ownsTransaction)
-                {
-                    tr = _db.TransactionManager.StartTransaction();
-                }
-
-                Entity ent = tr.GetObject(entityId, OpenMode.ForRead) as Entity;
-                if (ent is Polyline)
-                {
-                    Polyline pline = ent as Polyline;
-                    length = pline.Length;
-                }
-
-                if (ownsTransaction)
-                {
-                    tr.Commit();
-                }
-            }
-            catch
-            {
-                if (ownsTransaction)
-                {
-                    tr.Abort();
-                }
-                throw;
-            }
-            finally
-            {
-                if (ownsTransaction && tr != null)
-                {
-                    tr.Dispose();
-                }
-            }
-
-            return length;
-        }
 
         // Save child parts to an entity
         private void SaveChildPartsToEntity(Entity ent, string json, Transaction tr)
@@ -1162,66 +1008,41 @@ namespace TakeoffBridge
 
         #region Static Methods for Commands
 
-        // Command to regenerate all mark numbers in the drawing
-        public static void RegenerateAllMarkNumbers()
-        {
-            // Reset the manager and initialize from scratch
-            _instance = null;
-            MarkNumberManager manager = Instance;
+        
 
-            Editor ed = Application.DocumentManager.MdiActiveDocument.Editor;
+        public static void GenerateMarkNumbers()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+            Database db = doc.Database;
 
             try
             {
-                ed.WriteMessage("\nResetting all mark numbers...");
+                ed.WriteMessage("\nGenerating mark numbers using the fixed method...");
 
-                using (Transaction tr = Application.DocumentManager.MdiActiveDocument.Database.TransactionManager.StartTransaction())
+                MarkNumberManager manager = MarkNumberManager.Instance;
+
+                // First, load attachments to ensure they're available for mark number generation
+                List<Attachment> attachments = new List<Attachment>();
+
+                using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
-                    // Get all polylines in the drawing
-                    TypedValue[] tvs = new TypedValue[] {
-                        new TypedValue((int)DxfCode.Start, "LWPOLYLINE")
-                    };
+                    // Get named objects dictionary
+                    DBDictionary nod = (DBDictionary)tr.GetObject(db.NamedObjectsDictionaryId, OpenMode.ForRead);
 
-                    SelectionFilter filter = new SelectionFilter(tvs);
-                    PromptSelectionResult selRes = ed.SelectAll(filter);
-
-                    if (selRes.Status == PromptStatus.OK)
+                    // Check if attachment entry exists
+                    const string dictName = "METALATTACHMENTS";
+                    if (nod.Contains(dictName))
                     {
-                        SelectionSet ss = selRes.Value;
-
-                        foreach (SelectedObject selObj in ss)
+                        DBObject obj = tr.GetObject(nod.GetAt(dictName), OpenMode.ForRead);
+                        if (obj is Xrecord xrec && xrec.Data != null)
                         {
-                            ObjectId id = selObj.ObjectId;
-                            Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
-
-                            if (ent != null)
+                            TypedValue[] values = xrec.Data.AsArray();
+                            if (values.Length > 0 && values[0].TypeCode == (int)DxfCode.Text)
                             {
-                                // Check if this entity has metal component data
-                                string componentType = manager.GetComponentType(ent);
-
-                                if (!string.IsNullOrEmpty(componentType))
-                                {
-                                    // Reset the mark numbers
-                                    List<ChildPart> childParts = manager.GetChildParts(ent);
-                                    bool markNumbersChanged = false;
-
-                                    foreach (var part in childParts)
-                                    {
-                                        if (!string.IsNullOrEmpty(part.MarkNumber))
-                                        {
-                                            part.MarkNumber = null;
-                                            markNumbersChanged = true;
-                                        }
-                                    }
-
-                                    // Save updated child parts if mark numbers changed
-                                    if (markNumbersChanged)
-                                    {
-                                        Entity entForWrite = tr.GetObject(id, OpenMode.ForWrite) as Entity;
-                                        string json = JsonConvert.SerializeObject(childParts);
-                                        manager.SaveChildPartsToEntity(entForWrite, json, tr);
-                                    }
-                                }
+                                string json = values[0].Value.ToString();
+                                attachments = JsonConvert.DeserializeObject<List<Attachment>>(json);
+                                ed.WriteMessage($"\nLoaded {attachments.Count} attachments from drawing.");
                             }
                         }
                     }
@@ -1229,47 +1050,19 @@ namespace TakeoffBridge
                     tr.Commit();
                 }
 
-                // Force the manager to reinitialize
-                _instance = null;
+                // Important: Force refresh of the mark number manager
+                // This might be what's missing in your current implementation
+                Type managerType = manager.GetType();
+                var initializeMethod = managerType.GetMethod("InitializeFromDrawing",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 
-                ed.WriteMessage("\nMark numbers reset. Use GENERATEMARKNUMBERS to regenerate all mark numbers.");
-            }
-            catch (System.Exception ex)
-            {
-                ed.WriteMessage("\nError: " + ex.Message);
-            }
-        }
-
-        // Command to generate all mark numbers in the drawing
-        public static void GenerateAllMarkNumbers()
-        {
-            Editor ed = Application.DocumentManager.MdiActiveDocument.Editor;
-            Database db = Application.DocumentManager.MdiActiveDocument.Database;
-
-            try
-            {
-                ed.WriteMessage("\nGenerating mark numbers for all components...");
-
-                MarkNumberManager manager = Instance;
-
-                // First register all apps in a separate transaction
-                using (Transaction tr = db.TransactionManager.StartTransaction())
+                if (initializeMethod != null)
                 {
-                    RegAppTable regTable = (RegAppTable)tr.GetObject(db.RegAppTableId, OpenMode.ForWrite);
-
-                    // Register apps
-                    RegisterApp(regTable, "METALCOMP", tr);
-                    RegisterApp(regTable, "METALPARTSINFO", tr);
-
-                    for (int i = 0; i < 10; i++)
-                    {
-                        RegisterApp(regTable, $"METALPARTS{i}", tr);
-                    }
-
-                    tr.Commit();
+                    ed.WriteMessage("\nReinitializing mark number manager...");
+                    initializeMethod.Invoke(manager, null);
                 }
 
-                // First process horizontal components
+                // Process all components in a single transaction for consistency
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
                     // Get all polylines in the drawing
@@ -1282,68 +1075,43 @@ namespace TakeoffBridge
 
                     if (selRes.Status == PromptStatus.OK)
                     {
-                        SelectionSet ss = selRes.Value;
+                        ed.WriteMessage($"\nFound {selRes.Value.Count} polylines to process.");
 
-                        foreach (SelectedObject selObj in ss)
+                        int processedCount = 0;
+
+                        foreach (SelectedObject selObj in selRes.Value)
                         {
                             ObjectId id = selObj.ObjectId;
                             Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
 
                             if (ent != null)
                             {
-                                string componentType = manager.GetComponentType(ent, tr);
-
-                                if (componentType == "Horizontal")
+                                // Check if it's a metal component
+                                ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
+                                if (rbComp != null)
                                 {
-                                    manager.ProcessComponentMarkNumbers(id, tr);
+                                    // Force process this component's mark numbers
+                                    manager.ProcessComponentMarkNumbers(id, tr, true);
+                                    processedCount++;
                                 }
                             }
                         }
+
+                        ed.WriteMessage($"\nProcessed mark numbers for {processedCount} components.");
                     }
 
                     tr.Commit();
                 }
 
-                // Then process vertical components
-                using (Transaction tr = db.TransactionManager.StartTransaction())
-                {
-                    // Get all polylines in the drawing
-                    TypedValue[] tvs = new TypedValue[] {
-                new TypedValue((int)DxfCode.Start, "LWPOLYLINE")
-            };
+                // Update the display
+                ed.WriteMessage("\nUpdating mark number displays...");
+                MarkNumberDisplay.Instance.UpdateAllMarkNumbers();
 
-                    SelectionFilter filter = new SelectionFilter(tvs);
-                    PromptSelectionResult selRes = ed.SelectAll(filter);
-
-                    if (selRes.Status == PromptStatus.OK)
-                    {
-                        SelectionSet ss = selRes.Value;
-
-                        foreach (SelectedObject selObj in ss)
-                        {
-                            ObjectId id = selObj.ObjectId;
-                            Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
-
-                            if (ent != null)
-                            {
-                                string componentType = manager.GetComponentType(ent, tr);
-
-                                if (componentType == "Vertical")
-                                {
-                                    manager.ProcessComponentMarkNumbers(id, tr);
-                                }
-                            }
-                        }
-                    }
-
-                    tr.Commit();
-                }
-
-                ed.WriteMessage("\nMark number generation complete.");
+                ed.WriteMessage("\nMark number generation completed using the fixed method.");
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nError: {ex.Message}");
+                ed.WriteMessage($"\nError in fixed mark number generation: {ex.Message}");
                 ed.WriteMessage($"\nStack trace: {ex.StackTrace}");
             }
         }

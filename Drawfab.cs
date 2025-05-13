@@ -64,6 +64,7 @@ namespace TakeoffBridge
         {
             // Check if block already exists
             var bt = database.GetBlockTable(trans);
+            Point3d? workPoint = null; // Store workpoint info outside the using blocks
 
             if (!bt.Has(blockName))
             {
@@ -88,6 +89,14 @@ namespace TakeoffBridge
 
                         using (Transaction tempTr = tempDb.TransactionManager.StartTransaction())
                         {
+                            MullionPlacementData partData = MullionPlacementData.GetMullionData(tempDb, tempTr);
+                            if (partData != null)
+                            {
+                                MullionPlacementData.StoreMullionData(database, trans, partData);
+                                System.Diagnostics.Debug.WriteLine($"Mullion data transferred: Width = {partData.Width}, Offset = {partData.GlassPocketOffset}");
+                            }
+                        
+
                             BlockTable tempBt = (BlockTable)tempTr.GetObject(tempDb.BlockTableId, OpenMode.ForRead);
                             BlockTableRecord tempMs = (BlockTableRecord)tempTr.GetObject(
                                 tempBt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
@@ -412,7 +421,7 @@ namespace TakeoffBridge
                     foreach (Region region in finalRegions)
                     {
                         // Register application name if needed
-                        RegisterAppName(trans, database,  WorkPointAppName);
+                        RegisterAppName(trans, database, WorkPointAppName);
 
                         // Set XData with workpoint
                         try
@@ -921,6 +930,73 @@ namespace TakeoffBridge
         }
 
         /// <summary>
+        /// Creates an attached part (shear block or clip)
+        /// </summary>
+        private List<Solid3d> CreateAttachedPart(
+            Database database,
+            BlockTableRecord btr,
+            string blockName,
+            Transaction trans,
+            bool handed,
+            string handedSide,
+            Matrix3d finalTransform,
+            bool isVertical)
+        {
+            List<Solid3d> resultSolids = new List<Solid3d>();
+
+            try
+            {
+                // Get model space
+                var ms = database.GetModelspace(trans);
+                ms.UpgradeOpen();
+
+                // First, get the work point from the database (this will be the origin)
+                Point3d? workPoint = WorkPointManager.GetWorkPoint(database, trans);
+                Point3d insertionPoint = workPoint.HasValue ? workPoint.Value : Point3d.Origin;
+
+                // For attached parts, we'll create a block reference instead of extruding
+                BlockReference blockRef = new BlockReference(insertionPoint, btr.ObjectId);
+
+                // Apply transformations
+                // 1. First apply a 90-degree rotation around Z for vertical orientation
+                if (isVertical)
+                {
+                    blockRef.TransformBy(Matrix3d.Rotation(Math.PI / 2, Vector3d.ZAxis, insertionPoint));
+                }
+
+                // 2. Apply handed transformation if needed
+                var handedTransformation = GetHandedTransformation(handed, handedSide);
+                if (handedTransformation != Matrix3d.Identity)
+                {
+                    blockRef.TransformBy(handedTransformation);
+                }
+
+                // 3. Move to the bottom of the vertical part (standard 30" length)
+                // This sets the start point for our positioning
+                Matrix3d moveToBottom = Matrix3d.Displacement(new Vector3d(30.0, 0, 0));
+                blockRef.TransformBy(moveToBottom);
+
+                // 4. Apply final transform if provided (this includes the position adjustments)
+                if (finalTransform != Matrix3d.Identity)
+                {
+                    blockRef.TransformBy(finalTransform);
+                }
+
+                // Add to model space
+                ms.AppendEntity(blockRef);
+                trans.AddNewlyCreatedDBObject(blockRef, true);
+
+                // Return an empty list of solids since we're keeping the block intact
+                return resultSolids;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error creating attached part: {ex.Message}");
+                throw new Exception($"Failed to create attached part: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
         /// Creates a handed transformation matrix based on part characteristics
         /// </summary>
         private Matrix3d GetHandedTransformation(bool handed, string handedSide)
@@ -1007,63 +1083,93 @@ namespace TakeoffBridge
                     }
                     try
                     {
-                        
 
-
-                        // Extract regions from block
-                    var regions = GetExtrusionRegionsFromBlock(database, btr.ObjectId, trans);
-                    if (regions == null || regions.Count == 0)
-                    {
-                        throw new Exception("No valid regions found in the drawing");
-                    }
-
-                    // Transform regions to orientation
-                    var handedTransformation = GetHandedTransformation(handed, handedSide);
-                    TransformRegionsToStandardOrientation(regions, handedTransformation, preserveOriginalOrientation, isVertical);
-
-                    // Extrude regions to create solids
-                    resultSolids = ExtrudeRegions(regions, length, database, trans, preserveOriginalOrientation);
-
-                    /// Apply miter and tilt cuts if needed
-                    if (miterLeft != 90 || tiltLeft != 90 || miterRight != 90 || tiltRight != 90)
-                    {
-                        ApplyMiterAndTiltCuts(resultSolids, miterLeft, tiltLeft, miterRight, tiltRight, length,
-                                            preserveOriginalOrientation, visualizeOnly);
-                    }
-                    // Add angle dimensions if needed
-                    if (addDimensions)
-                    {
-                        AddAngleDimensions(resultSolids, miterLeft, tiltLeft, miterRight, tiltRight, length, database, trans);
-                    }
-
-                    // Apply final transformation
-                    if (finalTransform != Matrix3d.Identity)
-                    {
-                        foreach (var solid in resultSolids)
+                        // Check if we're creating an attached part (length == 0)
+                        if (length == 0)
                         {
-                            solid.TransformBy(finalTransform);
+                            // Call specialized method for attached parts
+                            resultSolids = CreateAttachedPart(database, btr, blockName, trans, handed, handedSide,
+                                                              finalTransform, isVertical);
                         }
-                    }
+                        else
+                        {
 
-                    // Add solids to modelspace
-                    var ms = database.GetModelspace(trans);
-                    ms.UpgradeOpen();
+                            // Extract regions from block
+                            var regions = GetExtrusionRegionsFromBlock(database, btr.ObjectId, trans);
+                            if (regions == null || regions.Count == 0)
+                            {
+                                throw new Exception("No valid regions found in the drawing");
+                            }
 
-                    foreach (var solid in resultSolids)
-                    {
-                        solid.Layer = "0"; // Set default layer, change as needed
-                        ms.AppendEntity(solid);
-                        trans.AddNewlyCreatedDBObject(solid, true);
-                    }
-                    trans.Commit();
-                    //ms.DowngradeOpen();
+                            // Transform regions to orientation
+                            var handedTransformation = GetHandedTransformation(handed, handedSide);
+                            TransformRegionsToStandardOrientation(regions, handedTransformation, preserveOriginalOrientation, isVertical);
 
-                    // Dispose of regions as they're no longer needed
-                    foreach (var region in regions)
-                    {
-                        region.Dispose();
-                    }
+                            // Extrude regions to create solids
+                            resultSolids = ExtrudeRegions(regions, length, database, trans, preserveOriginalOrientation);
 
+                            /// Apply miter and tilt cuts if needed
+                            if (miterLeft != 90 || tiltLeft != 90 || miterRight != 90 || tiltRight != 90)
+                            {
+                                ApplyMiterAndTiltCuts(resultSolids, miterLeft, tiltLeft, miterRight, tiltRight, length,
+                                                    preserveOriginalOrientation, visualizeOnly);
+                            }
+                            // Add angle dimensions if needed
+                            if (addDimensions)
+                            {
+                                AddAngleDimensions(resultSolids, miterLeft, tiltLeft, miterRight, tiltRight, length, database, trans);
+                            }
+
+                            // Apply final transformation
+                            if (finalTransform != Matrix3d.Identity)
+                            {
+                                foreach (var solid in resultSolids)
+                                {
+                                    solid.TransformBy(finalTransform);
+                                }
+                            }
+
+                            // Extract work point from part file first
+                            Point3d? workPoint = null;
+                            using (var tempDb = new Database(false, true))
+                            {
+                                tempDb.ReadDwgFile(partDrawingPath, FileOpenMode.OpenForReadAndAllShare, true, "");
+                                using (Transaction tempTr = tempDb.TransactionManager.StartTransaction())
+                                {
+                                    workPoint = WorkPointManager.GetWorkPoint(tempDb, tempTr);
+                                    tempTr.Commit();
+                                }
+                            }
+
+                            // Add solids to modelspace
+                            var ms = database.GetModelspace(trans);
+                            ms.UpgradeOpen();
+
+                            foreach (var solid in resultSolids)
+                            {
+                                solid.Layer = "0"; // Set default layer, change as needed
+                                ms.AppendEntity(solid);
+                                trans.AddNewlyCreatedDBObject(solid, true);
+                            }
+
+                            // Store work point if found (before committing the transaction)
+                            if (workPoint.HasValue)
+                            {
+                                WorkPointManager.StoreWorkPoint(database, trans, workPoint.Value);
+                                System.Diagnostics.Debug.WriteLine($"Work point transferred from part to template: ({workPoint.Value.X}, {workPoint.Value.Y}, {workPoint.Value.Z})");
+                            }
+
+                            trans.Commit();
+                            //ms.DowngradeOpen();
+
+                            // Dispose of regions as they're no longer needed
+                            foreach (var region in regions)
+                            {
+                                region.Dispose();
+                            }
+
+                            
+                        }
                     }
                     finally
                     {
@@ -1110,5 +1216,5 @@ namespace TakeoffBridge
             return (BlockTableRecord)transaction.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead);
         }
     }
-    
+
 }

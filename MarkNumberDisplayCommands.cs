@@ -52,11 +52,31 @@ namespace TakeoffBridge
             try
             {
                 ed.WriteMessage("\nClearing all mark number displays...");
-
+                // Clear the attachments and then clear the mark numbers
+                MarkNumberDisplay.ClearAttachments();
                 // Get the mark number display manager
                 MarkNumberDisplay.Instance.ClearAllMarkTexts();
 
                 ed.WriteMessage("\nMark number displays cleared.");
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nError: {ex.Message}");
+            }
+        }
+
+        [CommandMethod("CLEARATTCHMENTS")]
+        public void ClearAttachments ()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+
+            try
+            {
+                ed.WriteMessage("\nClearing all attachments...");
+                // Get the mark number display manager
+                MarkNumberDisplay.ClearAttachments();
+                ed.WriteMessage("\nAttachments cleared.");
             }
             catch (System.Exception ex)
             {
@@ -330,7 +350,9 @@ namespace TakeoffBridge
                 _monitorActive = true;
             }
 
-            [CommandMethod("STOPMONITOR", CommandFlags.Transparent)]
+        
+
+        [CommandMethod("STOPMONITOR", CommandFlags.Transparent)]
             public void StopMonitor()
             {
                 Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -402,6 +424,8 @@ namespace TakeoffBridge
                     tr.Commit();
                 }
             }
-        }
+
+        
+    }
 
 }

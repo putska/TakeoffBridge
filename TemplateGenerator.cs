@@ -50,42 +50,7 @@ namespace TakeoffBridge
             public bool Invert { get; set; }
         }
 
-        // Using the ChildPart class structure from your code
-        public class ChildPart
-        {
-            public string Name { get; set; }
-            public string PartType { get; set; }
-            public double LengthAdjustment { get; set; }
-            public bool IsShopUse { get; set; }
-            public double StartAdjustment { get; set; }
-            public double EndAdjustment { get; set; }
-            public bool IsFixedLength { get; set; }
-            public double FixedLength { get; set; }
-            public string MarkNumber { get; set; }
-            public string Material { get; set; }
-            public string Attach { get; set; }
-            public bool Invert { get; set; }
-            public double Adjust { get; set; }
-            public bool Clips { get; set; }
-            public string Finish { get; set; }
-            public string Fab { get; set; }
-        }
-
-        public class Attachment
-        {
-            // Change these from Handle type to string
-            public string HorizontalHandle { get; set; }
-            public string VerticalHandle { get; set; }
-
-            // Keep the rest as they are
-            public string HorizontalPartType { get; set; }
-            public string VerticalPartType { get; set; }
-            public string Side { get; set; }
-            public double Position { get; set; }
-            public double Height { get; set; }
-            public bool Invert { get; set; }
-            public double Adjust { get; set; }
-        }
+        
 
         private readonly string templatesPath = @"C:\CSE\Takeoff\fabs\dies";
         private readonly string baseTemplatePath;

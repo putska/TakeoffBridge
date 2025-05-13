@@ -185,141 +185,7 @@ namespace TakeoffBridge
             }
         }
 
-        //private void Database_MTextModified(object sender, ObjectEventArgs e)
-        //{
-        //    if (_suppressEvents) return;
-
-        //    try
-        //    {
-        //        // Check if this is an MText object
-        //        if (!(e.DBObject is MText)) return;
-
-        //        MText mtext = e.DBObject as MText;
-        //        if (mtext == null) return;
-
-        //        try
-        //        {
-        //            // Check if the MText has our XData and retrieve it safely
-        //            ResultBuffer rb = null;
-        //            try
-        //            {
-        //                rb = mtext.GetXDataForApplication("MARKNUMBERTEXT");
-        //            }
-        //            catch
-        //            {
-        //                // If exception occurs getting XData, just return
-        //                return;
-        //            }
-
-        //            if (rb == null) return;
-
-        //            TypedValue[] values = null;
-        //            try
-        //            {
-        //                values = rb.AsArray();
-        //            }
-        //            catch
-        //            {
-        //                return;
-        //            }
-
-        //            if (values == null || values.Length < 3) return;
-
-        //            // Get component handle and part type very carefully
-        //            string componentHandle = null;
-        //            string partType = null;
-
-        //            try
-        //            {
-        //                if (values.Length > 1 && values[1].TypeCode == (int)DxfCode.ExtendedDataAsciiString && values[1].Value != null)
-        //                    componentHandle = values[1].Value.ToString();
-
-        //                if (values.Length > 2 && values[2].TypeCode == (int)DxfCode.ExtendedDataAsciiString && values[2].Value != null)
-        //                    partType = values[2].Value.ToString();
-        //            }
-        //            catch
-        //            {
-        //                return;
-        //            }
-
-        //            if (string.IsNullOrEmpty(componentHandle) || string.IsNullOrEmpty(partType))
-        //                return;
-
-        //            // Now update the custom offset
-        //            try
-        //            {
-        //                UpdateCustomOffset(componentHandle, partType, mtext.Location);
-        //                System.Diagnostics.Debug.WriteLine($"Updated custom position for {componentHandle}.{partType}");
-        //            }
-        //            catch (System.Exception ex)
-        //            {
-        //                System.Diagnostics.Debug.WriteLine($"Error updating custom offset: {ex.Message}");
-        //            }
-        //        }
-        //        catch (System.Exception innerEx)
-        //        {
-        //            // Handle any errors accessing XData
-        //            System.Diagnostics.Debug.WriteLine($"Error processing MText XData: {innerEx.Message}");
-        //        }
-        //    }
-        //    catch (System.Exception ex)
-        //    {
-        //        System.Diagnostics.Debug.WriteLine($"Error in Database_MTextModified: {ex.Message}");
-        //    }
-        //}
-
-        //private void Database_ObjectErased(object sender, ObjectErasedEventArgs e)
-        //{
-        //    if (e.Erased)
-        //    {
-        //        try
-        //        {
-        //            // Check if this is a component
-        //            if (e.DBObject is Polyline)
-        //            {
-        //                string handle = e.DBObject.Handle.ToString();
-
-        //                // If we have texts for this component, erase them
-        //                if (_markNumberTexts.ContainsKey(handle))
-        //                {
-        //                    DeleteMarkTextsForComponent(handle);
-        //                }
-        //            }
-
-        //            // Check if this is one of our MText objects
-        //            if (e.DBObject is MText)
-        //            {
-        //                MText mtext = e.DBObject as MText;
-
-        //                // Find and remove this text from our tracking
-        //                foreach (var kvp in _markNumberTexts)
-        //                {
-        //                    string componentHandle = kvp.Key;
-        //                    List<MarkNumberText> texts = kvp.Value;
-
-        //                    for (int i = texts.Count - 1; i >= 0; i--)
-        //                    {
-        //                        if (texts[i].TextObjectId == mtext.ObjectId)
-        //                        {
-        //                            texts.RemoveAt(i);
-        //                            break;
-        //                        }
-        //                    }
-
-        //                    // If no more texts for this component, remove the entry
-        //                    if (texts.Count == 0)
-        //                    {
-        //                        _markNumberTexts.Remove(componentHandle);
-        //                    }
-        //                }
-        //            }
-        //        }
-        //        catch (System.Exception ex)
-        //        {
-        //            System.Diagnostics.Debug.WriteLine($"Error in Database_ObjectErased: {ex.Message}");
-        //        }
-        //    }
-        //}
+       
 
         #endregion
 
@@ -456,6 +322,53 @@ namespace TakeoffBridge
             }
         }
 
+        public static void ClearAttachments()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+            Database db = doc.Database;
+
+            try
+            {
+                ed.WriteMessage("\nClearing all attachments...");
+
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    // Get named objects dictionary
+                    DBDictionary nod = (DBDictionary)tr.GetObject(db.NamedObjectsDictionaryId, OpenMode.ForWrite);
+
+                    // Check if attachment entry exists
+                    const string dictName = "METALATTACHMENTS";
+                    if (nod.Contains(dictName))
+                    {
+                        // Remove the entry
+                        ObjectId attachmentsId = nod.GetAt(dictName);
+                        nod.Remove(attachmentsId);
+
+                        // Also erase the object
+                        tr.GetObject(attachmentsId, OpenMode.ForWrite).Erase();
+
+                        ed.WriteMessage("\nAll attachments cleared from drawing.");
+                    }
+                    else
+                    {
+                        ed.WriteMessage("\nNo attachments found in drawing.");
+                    }
+
+                    tr.Commit();
+                }
+
+                // Force the manager to reinitialize
+                _instance = null;
+
+                ed.WriteMessage("\nAttachments have been cleared. Run DETECTATTACHMENTS to detect new attachments.");
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nError clearing attachments: {ex.Message}");
+            }
+        }
+
         /// <summary>
         /// Creates a new MText object for a mark number
         /// </summary>
@@ -568,6 +481,8 @@ namespace TakeoffBridge
 
             return ObjectId.Null;
         }
+
+        
 
         /// <summary>
         /// Updates all mark number displays in the drawing
@@ -721,6 +636,8 @@ namespace TakeoffBridge
                 }
             }
         }
+
+
 
         #endregion
 

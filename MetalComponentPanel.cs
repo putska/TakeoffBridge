@@ -2041,17 +2041,6 @@ namespace TakeoffBridge
         }
     }
 
-    public class Attachment
-    {
-        public string HorizontalHandle { get; set; }
-        public string VerticalHandle { get; set; }
-        public string HorizontalPartType { get; set; }
-        public string VerticalPartType { get; set; }
-        public string Side { get; set; }
-        public double Position { get; set; }
-        public double Height { get; set; }
-        public bool Invert { get; set; }
-        public double Adjust { get; set; }
-    }
+   
 
 }

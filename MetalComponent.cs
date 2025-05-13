@@ -10,171 +10,17 @@ using System.Linq;
 using System.Net.Mail;
 using System.Linq.Expressions;
 using Newtonsoft.Json;
+using System.Security.Cryptography;
 
 // This file contains our custom MetalComponent entity definition
 
 namespace TakeoffBridge
 {
-    // Define our child part class
-    public class ChildPart
-    {
-        public string Name { get; set; }
-        public string PartType { get; set; }
+   
 
-        // Original length adjustment (keeping for backward compatibility)
-        public double LengthAdjustment { get; set; }
-        public bool IsShopUse { get; set; }
 
-        // New end-specific adjustments
-        public double StartAdjustment { get; set; } // Left for horizontal, Bottom for vertical
-        public double EndAdjustment { get; set; }   // Right for horizontal, Top for vertical
 
-        // New fixed length property
-        public bool IsFixedLength { get; set; }
-        public double FixedLength { get; set; }
 
-        public string MarkNumber { get; set; }
-        public string Material { get; set; }
-
-        // Attachment properties
-        public string Attach { get; set; } // "L", "R", or null/empty
-        public bool Invert { get; set; }   // Whether the part should be inverted
-        public double Adjust { get; set; } // Vertical adjustment (inches)
-        public bool Clips { get; set; }    // For vertical parts - whether clips attach to this part
-
-        public string Finish { get; set; } // The finish of the part
-        public string Fab { get; set; }  // The fabrication of the part
-
-        // Default constructor for JSON deserialization
-        public ChildPart()
-        {
-            // Initialize default values
-            Name = "";
-            PartType = "";
-            LengthAdjustment = 0.0;
-            StartAdjustment = 0.0;
-            EndAdjustment = 0.0;
-            IsFixedLength = false;
-            FixedLength = 0.0;
-            Material = "";
-            MarkNumber = "";
-            Attach = "";
-            Invert = false;
-            Adjust = 0.0;
-            Clips = false;
-
-            Finish = "Paint";
-            Fab = "1";
-
-        }
-
-        public ChildPart(string name, string partType, double lengthAdjustment, string material)
-        {
-            Name = name;
-            PartType = partType;
-            LengthAdjustment = lengthAdjustment;
-            Material = material;
-            IsShopUse = false;
-            MarkNumber = ""; // Will be assigned later
-
-            // Initialize new end-specific adjustments
-            // Initially set them to half the total adjustment on each end
-            StartAdjustment = lengthAdjustment / 2;
-            EndAdjustment = lengthAdjustment / 2;
-
-            // Default to non-fixed length
-            IsFixedLength = false;
-            FixedLength = 0.0;
-
-            // Initialize attachment properties with defaults
-            Attach = "";
-            Invert = false;
-            Adjust = 0.0;
-            Clips = false;
-
-            Finish = "Paint";
-            Fab = "1";
-        }
-
-        // Additional constructor for direct end adjustments
-        public ChildPart(string name, string partType, double startAdjustment, double endAdjustment, string material)
-        {
-            Name = name;
-            PartType = partType;
-            IsShopUse = false;
-            StartAdjustment = startAdjustment;
-            EndAdjustment = endAdjustment;
-            LengthAdjustment = startAdjustment + endAdjustment; // For backward compatibility
-            Material = material;
-            MarkNumber = "";
-
-            // Default to non-fixed length
-            IsFixedLength = false;
-            FixedLength = 0.0;
-
-            // Initialize attachment properties with defaults
-            Attach = "";
-            Invert = false;
-            Adjust = 0.0;
-            Clips = false;
-
-            Finish = "Paint";
-            Fab = "1";
-        }
-
-        // Constructor for fixed length parts
-        public ChildPart(string name, string partType, double fixedLength, string material, bool isFixed)
-        {
-            if (!isFixed) throw new ArgumentException("This constructor should only be used for fixed length parts");
-
-            Name = name;
-            PartType = partType;
-            IsShopUse = false;
-            FixedLength = fixedLength;
-            IsFixedLength = true;
-            Material = material;
-            MarkNumber = "";
-
-            // Set adjustments to 0 for fixed length parts
-            StartAdjustment = 0;
-            EndAdjustment = 0;
-            LengthAdjustment = 0;
-
-            // Initialize attachment properties with defaults
-            Attach = "";
-            Invert = false;
-            Adjust = 0.0;
-            Clips = false;
-
-            Finish = "Paint";
-            Fab = "1";
-        }
-
-        // Calculate the actual length based on parent component length
-        public double GetActualLength(double parentLength)
-        {
-            // If fixed length, just return that value
-            if (IsFixedLength)
-            {
-                return FixedLength;
-            }
-
-            // Otherwise use the sum of both adjustments to get the total length adjustment
-            return parentLength + StartAdjustment + EndAdjustment;
-        }
-
-        // Calculate the actual start point offset
-        public double GetStartOffset()
-        {
-            return StartAdjustment;
-        }
-
-        // Calculate the actual end point offset
-        public double GetEndOffset()
-        {
-            return EndAdjustment;
-        }
-    }
 
     // Commands for working with metal components
     public class MetalComponentCommands
@@ -202,6 +48,10 @@ namespace TakeoffBridge
             public string Elevation { get; set; }
             public List<ChildPart> Parts { get; set; }
         }
+
+        // Static palette set to maintain a single instance
+        private static PaletteSet _paletteSet;
+
 
         // New CommandMethod to update parent data
         [CommandMethod("UPDATEPARENT")]
@@ -463,7 +313,8 @@ namespace TakeoffBridge
                             new TypedValue((int)DxfCode.ExtendedDataAsciiString, chunk)
                         );
                         pline.XData = rbChunk;
-                    };
+                    }
+                    ;
                     tr.Commit();
                     using (Transaction trx = doc.Database.TransactionManager.StartTransaction())
                     {
@@ -626,243 +477,167 @@ namespace TakeoffBridge
         }
 
 
-        // Modified method for detecting attachments
         [CommandMethod("DETECTATTACHMENTS")]
         public void DetectAttachments()
         {
-            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
             Database db = doc.Database;
 
             ed.WriteMessage("\nDetecting part attachments with end-specific adjustments...");
 
+            // Declare attachments list outside the using block so it stays in scope
+            List<Attachment> attachments = new List<Attachment>();
+
             try
             {
-                // Collect all metal components with their parts
-                List<MetalComponent> components = new List<MetalComponent>();
-
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
-                    // Get all entities in model space
-                    BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
-                    BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+                    // Get all components using the central manager
+                    List<DrawingComponentManager.Component> components =
+                        DrawingComponentManager.Instance.GetAllComponents(tr);
 
-                    foreach (ObjectId objId in btr)
+                    // Group components by elevation
+                    var componentsByElevation = components.GroupBy(c => c.Elevation);
+
+                    // Process each elevation group
+                    foreach (var elevGroup in componentsByElevation)
                     {
-                        Entity ent = tr.GetObject(objId, OpenMode.ForRead) as Entity;
-                        if (ent is Polyline)
+                        ed.WriteMessage($"\nProcessing elevation {elevGroup.Key}");
+
+                        // Get verticals with parts that allow clips
+                        var verticals = elevGroup.Where(c => c.Type.ToUpper() == "VERTICAL" &&
+                                                          c.Parts.Any(p => p.Clips)).ToList();
+
+                        // Get horizontals with parts that attach
+                        var horizontals = elevGroup.Where(c => c.Type.ToUpper() == "HORIZONTAL" &&
+                                                           c.Parts.Any(p => !string.IsNullOrEmpty(p.Attach))).ToList();
+
+                        ed.WriteMessage($"\n  Found {verticals.Count} verticals and {horizontals.Count} horizontals");
+
+                        // Process each vertical
+                        foreach (var vertical in verticals)
                         {
-                            Polyline pline = ent as Polyline;
-
-                            // Check if it has METALCOMP Xdata
-                            ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
-                            if (rbComp != null)
+                            // Calculate vertical bottom and top points
+                            Point3d verticalBottom, verticalTop;
+                            if (vertical.StartPoint.Y < vertical.EndPoint.Y)
                             {
-                                string componentType = "";
-                                string floor = "";
-                                string elevation = "";
-
-                                // Extract basic component data
-                                TypedValue[] xdataComp = rbComp.AsArray();
-                                for (int i = 1; i < xdataComp.Length; i++) // Skip app name
-                                {
-                                    if (i == 1) componentType = xdataComp[i].Value.ToString();
-                                    if (i == 2) floor = xdataComp[i].Value.ToString();
-                                    if (i == 3) elevation = xdataComp[i].Value.ToString();
-                                }
-
-                                // Create metal component
-                                MetalComponent comp = new MetalComponent
-                                {
-                                    Handle = ent.Handle.ToString(),
-                                    Type = componentType,
-                                    Elevation = elevation,
-                                    Floor = floor,
-                                    StartPoint = pline.GetPoint3dAt(0),
-                                    EndPoint = pline.GetPoint3dAt(1),
-                                    Parts = new List<ChildPart>()
-                                };
-
-                                // Get parts data
-                                string partsJson = GetPartsJsonFromEntity(pline);
-                                if (!string.IsNullOrEmpty(partsJson))
-                                {
-                                    try
-                                    {
-                                        comp.Parts = Newtonsoft.Json.JsonConvert.DeserializeObject<List<ChildPart>>(partsJson);
-                                    }
-                                    catch (System.Exception ex)
-                                    {
-                                        ed.WriteMessage($"\nError deserializing parts: {ex.Message}");
-                                    }
-                                }
-
-                                components.Add(comp);
+                                verticalBottom = vertical.StartPoint;
+                                verticalTop = vertical.EndPoint;
                             }
-                        }
-                    }
-
-                    tr.Commit();
-                }
-
-                // Group components by elevation
-                var componentsByElevation = components.GroupBy(c => c.Elevation);
-
-                // List to store attachments
-                List<Attachment> attachments = new List<Attachment>();
-
-                // Process each elevation group
-                foreach (var elevGroup in componentsByElevation)
-                {
-                    ed.WriteMessage($"\nProcessing elevation {elevGroup.Key}");
-
-                    // Get verticals with parts that allow clips
-                    var verticals = elevGroup.Where(c => c.Type.ToUpper() == "VERTICAL" &&
-                                                      c.Parts.Any(p => p.Clips)).ToList();
-
-                    // Get horizontals with parts that attach
-                    var horizontals = elevGroup.Where(c => c.Type.ToUpper() == "HORIZONTAL" &&
-                                                       c.Parts.Any(p => !string.IsNullOrEmpty(p.Attach))).ToList();
-
-                    ed.WriteMessage($"\n  Found {verticals.Count} verticals and {horizontals.Count} horizontals");
-
-                    // Process each vertical
-                    foreach (var vertical in verticals)
-                    {
-                        // Calculate vertical bottom and top points, accounting for parts with adjustments
-                        Point3d verticalBottom, verticalTop;
-                        if (vertical.StartPoint.Y < vertical.EndPoint.Y)
-                        {
-                            verticalBottom = vertical.StartPoint;
-                            verticalTop = vertical.EndPoint;
-                        }
-                        else
-                        {
-                            verticalBottom = vertical.EndPoint;
-                            verticalTop = vertical.StartPoint;
-                        }
-
-                        // Find parts in vertical that allow clips
-                        var clipParts = vertical.Parts.Where(p => p.Clips).ToList();
-
-                        foreach (var clipPart in clipParts)
-                        {
-                            // Calculate adjusted vertical points for this specific part
-                            // For vertical parts, StartAdjustment affects bottom, EndAdjustment affects top
-                            Vector3d direction = verticalTop - verticalBottom;
-                            double length = direction.Length;
-                            if (length > 0)
+                            else
                             {
-                                direction = direction / length;
+                                verticalBottom = vertical.EndPoint;
+                                verticalTop = vertical.StartPoint;
                             }
 
-                            Point3d adjustedBottom = verticalBottom + (direction * clipPart.StartAdjustment);
-                            Point3d adjustedTop = verticalTop - (direction * clipPart.EndAdjustment);
+                            // Find parts in vertical that allow clips
+                            var clipParts = vertical.Parts.Where(p => p.Clips).ToList();
 
-                            // Find horizontals that might intersect with this adjusted vertical
-                            foreach (var horizontal in horizontals)
+                            foreach (var clipPart in clipParts)
                             {
-                                // Find parts in horizontal that have attachments
-                                var attachingParts = horizontal.Parts.Where(p => !string.IsNullOrEmpty(p.Attach)).ToList();
-
-                                foreach (var hPart in attachingParts)
+                                // Calculate adjusted vertical points for this specific part
+                                Vector3d direction = verticalTop - verticalBottom;
+                                double length = direction.Length;
+                                if (length > 0)
                                 {
-                                    // Calculate the adjusted horizontal points for this specific part
-                                    Point3d horizontalStart, horizontalEnd;
-                                    if (horizontal.StartPoint.X < horizontal.EndPoint.X)
-                                    {
-                                        horizontalStart = horizontal.StartPoint;
-                                        horizontalEnd = horizontal.EndPoint;
-                                    }
-                                    else
-                                    {
-                                        horizontalStart = horizontal.EndPoint;
-                                        horizontalEnd = horizontal.StartPoint;
-                                    }
+                                    direction = direction / length;
+                                }
 
-                                    Vector3d hDirection = horizontalEnd - horizontalStart;
-                                    //hDirection = hDirection.GetNormalizedVector();
-                                    double hLength = hDirection.Length;
-                                    if (hLength > 0)
+                                Point3d adjustedBottom = verticalBottom - (direction * clipPart.StartAdjustment);
+                                Point3d adjustedTop = verticalTop + (direction * clipPart.EndAdjustment);
+
+                                // Find horizontals that might intersect
+                                foreach (var horizontal in horizontals)
+                                {
+                                    // Find parts in horizontal that have attachments
+                                    var attachingParts = horizontal.Parts.Where(p => !string.IsNullOrEmpty(p.Attach)).ToList();
+
+                                    foreach (var hPart in attachingParts)
                                     {
-                                        hDirection = hDirection / hLength;
-                                    }
-
-                                    Point3d adjustedStart = horizontalStart + (hDirection * hPart.StartAdjustment);
-                                    Point3d adjustedEnd = horizontalEnd - (hDirection * hPart.EndAdjustment);
-
-                                    // Check for intersection between adjusted vertical and horizontal parts
-                                    if (LinesIntersect(adjustedBottom, adjustedTop,
-                                                      adjustedStart, adjustedEnd,
-                                                      out Point3d intersectionPt,
-                                                      proximityThreshold: 6.0))
-                                    {
-                                        // Determine which side (L or R) the vertical is on
-                                        string side = DetermineSide(adjustedStart, adjustedEnd,
-                                                                 adjustedBottom, adjustedTop);
-
-                                        // If part attaches on the determined side
-                                        if (hPart.Attach == side)
+                                        // Calculate adjusted horizontal points
+                                        Point3d horizontalStart, horizontalEnd;
+                                        if (horizontal.StartPoint.X < horizontal.EndPoint.X)
                                         {
-                                            // Calculate height from vertical bottom
-                                            double height = intersectionPt.Y - verticalBottom.Y;
+                                            horizontalStart = horizontal.StartPoint;
+                                            horizontalEnd = horizontal.EndPoint;
+                                        }
+                                        else
+                                        {
+                                            horizontalStart = horizontal.EndPoint;
+                                            horizontalEnd = horizontal.StartPoint;
+                                        }
 
-                                            // Calculate position along horizontal
-                                            double position = CalculatePosition(horizontal.StartPoint, horizontal.EndPoint, intersectionPt);
+                                        Vector3d hDirection = horizontalEnd - horizontalStart;
+                                        double hLength = hDirection.Length;
+                                        if (hLength > 0)
+                                        {
+                                            hDirection = hDirection / hLength;
+                                        }
 
-                                            Attachment attachment = new Attachment
+                                        Point3d adjustedStart = horizontalStart + (hDirection * hPart.StartAdjustment);
+                                        Point3d adjustedEnd = horizontalEnd - (hDirection * hPart.EndAdjustment);
+
+                                        // Check for intersection
+                                        if (LinesIntersect(adjustedBottom, adjustedTop,
+                                                          adjustedStart, adjustedEnd,
+                                                          out Point3d intersectionPt,
+                                                          proximityThreshold: 6.0))
+                                        {
+                                            double height = intersectionPt.Y - adjustedBottom.Y + hPart.Adjust;
+                                            string side = DetermineSide(adjustedStart, adjustedEnd,
+                                                                     adjustedBottom, adjustedTop);
+
+                                            // If part attaches on the determined side
+                                            if (hPart.Attach == side)
                                             {
-                                                HorizontalHandle = horizontal.Handle,
-                                                VerticalHandle = vertical.Handle,
-                                                HorizontalPartType = hPart.PartType,
-                                                VerticalPartType = clipPart.PartType,
-                                                Side = side,
-                                                Position = position,
-                                                Height = height,
-                                                Invert = hPart.Invert,
-                                                Adjust = hPart.Adjust
-                                            };
+                                                // Calculate position along horizontal
+                                                double position = CalculatePosition(horizontal.StartPoint, horizontal.EndPoint, intersectionPt);
 
-                                            attachments.Add(attachment);
+                                                Attachment attachment = new Attachment
+                                                {
+                                                    HorizontalHandle = horizontal.Handle,
+                                                    VerticalHandle = vertical.Handle,
+                                                    HorizontalPartType = hPart.PartType,
+                                                    VerticalPartType = clipPart.PartType,
+                                                    Side = side,
+                                                    Position = position,
+                                                    Height = height,
+                                                    Invert = hPart.Invert,
+                                                    Adjust = hPart.Adjust
+                                                };
 
-                                            ed.WriteMessage($"\n    Attachment: {hPart.PartType} to {clipPart.PartType} on {side} side at height {height:F3}");
+                                                attachments.Add(attachment);
+
+                                                ed.WriteMessage($"\n    Attachment: {hPart.PartType} to {clipPart.PartType} on {side} side at height {height:F3}");
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                     }
+
+                    // Save attachments to the drawing using the central manager
+                    DrawingComponentManager.Instance.SaveAttachmentsToDrawing(attachments, tr);
+
+                    tr.Commit();
+
                 }
 
-                // Save attachments to the drawing
-                SaveAttachmentsToDrawing(attachments);
+                // Now attachments is still in scope here
+                ed.WriteMessage($"\nDetected and saved {attachments.Count} attachments with end-specific adjustments");
 
-                ed.WriteMessage($"\nDetected {attachments.Count} attachments with end-specific adjustments");
-
-                // NEW CODE: Refresh mark numbers after detecting attachments
+                // Update mark numbers
                 ed.WriteMessage("\nUpdating mark numbers based on new attachments...");
-
-                // Create an instance of the MarkNumberDisplayCommands to call RefreshAllMarkNumbers
-                MarkNumberDisplayCommands markNumberCommands = new MarkNumberDisplayCommands();
-
-                // Use reflection to call the private method
-                Type commandsType = typeof(MarkNumberDisplayCommands);
-                System.Reflection.MethodInfo refreshMethod = commandsType.GetMethod("RefreshAllMarkNumbers",
-                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-                if (refreshMethod != null)
-                {
-                    refreshMethod.Invoke(markNumberCommands, null);
-                }
-
-                // Update the display of mark numbers
-                MarkNumberDisplay.Instance.UpdateAllMarkNumbers();
+                //MarkNumberDisplay.Instance.UpdateAllMarkNumbers();
+                MarkNumberManager.GenerateMarkNumbers(); // Call the fixed method directly
 
                 ed.WriteMessage("\nMark numbers updated successfully.");
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nError in DETECTATTACHMENTS: {ex.Message}");
+                ed.WriteMessage($"\nError in GenerateMarkNumbers: {ex.Message}");
                 ed.WriteMessage($"\n{ex.StackTrace}");
             }
         }
@@ -879,18 +654,7 @@ namespace TakeoffBridge
             public List<ChildPart> Parts { get; set; }
         }
 
-        private class Attachment
-        {
-            public string HorizontalHandle { get; set; }
-            public string VerticalHandle { get; set; }
-            public string HorizontalPartType { get; set; }
-            public string VerticalPartType { get; set; }
-            public string Side { get; set; }
-            public double Position { get; set; }      // Position along horizontal
-            public double Height { get; set; }        // Height from bottom of vertical
-            public bool Invert { get; set; }
-            public double Adjust { get; set; }
-        }
+       
 
         private bool LinesIntersect(Point3d line1Start, Point3d line1End,
                            Point3d line2Start, Point3d line2End,
@@ -903,24 +667,9 @@ namespace TakeoffBridge
                 return true;
             }
 
-            // If no exact intersection, check for proximity cases
 
-            // CASE 1: Check if horizontal line is near vertical line's endpoints (head/sill cases)
-            // This checks if vertical top (line1End) is near horizontal line (potential head)
-            if (PointToLineDistance(line1End, line2Start, line2End) <= proximityThreshold)
-            {
-                intersectionPoint = line1End; // Use vertical top as intersection point
-                return true;
-            }
 
-            // This checks if vertical bottom (line1Start) is near horizontal line (potential sill)
-            if (PointToLineDistance(line1Start, line2Start, line2End) <= proximityThreshold)
-            {
-                intersectionPoint = line1Start; // Use vertical bottom as intersection point
-                return true;
-            }
-
-            // CASE 2: Check if vertical line is near horizontal line's endpoints
+            // Check if vertical line is near horizontal line's endpoints
             // Get bounding box of vertical line
             double minY = Math.Min(line1Start.Y, line1End.Y);
             double maxY = Math.Max(line1Start.Y, line1End.Y);
@@ -1159,13 +908,14 @@ namespace TakeoffBridge
         [CommandMethod("LISTATTACHMENTS")]
         public void ListAttachments()
         {
-            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
-            Database db = doc.Database;
 
             try
             {
-                List<Attachment> attachments = LoadAttachmentsFromDrawing();
+                // Use the central manager to get attachments
+                List<Attachment> attachments =
+                    DrawingComponentManager.Instance.GetAllAttachments();
 
                 if (attachments.Count == 0)
                 {
@@ -1175,7 +925,7 @@ namespace TakeoffBridge
 
                 ed.WriteMessage($"\nFound {attachments.Count} attachments:");
 
-                // Group by vertical handle for better organization
+                // Group by vertical handle
                 var groupedAttachments = attachments.GroupBy(a => a.VerticalHandle);
 
                 foreach (var group in groupedAttachments)
@@ -1203,199 +953,8 @@ namespace TakeoffBridge
             }
         }
 
-        private List<Attachment> LoadAttachmentsFromDrawing()
-        {
-            List<Attachment> attachments = new List<Attachment>();
 
-            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
-            Database db = doc.Database;
 
-            using (Transaction tr = db.TransactionManager.StartTransaction())
-            {
-                // Get named objects dictionary
-                DBDictionary nod = (DBDictionary)tr.GetObject(db.NamedObjectsDictionaryId, OpenMode.ForRead);
-
-                // Check if entry exists
-                const string dictName = "METALATTACHMENTS";
-
-                if (nod.Contains(dictName))
-                {
-                    DBObject obj = tr.GetObject(nod.GetAt(dictName), OpenMode.ForRead);
-                    if (obj is Xrecord)
-                    {
-                        Xrecord xrec = obj as Xrecord;
-                        ResultBuffer rb = xrec.Data;
-
-                        if (rb != null)
-                        {
-                            TypedValue[] values = rb.AsArray();
-                            if (values.Length > 0 && values[0].TypeCode == (int)DxfCode.Text)
-                            {
-                                string json = values[0].Value.ToString();
-                                attachments = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Attachment>>(json);
-                            }
-                        }
-                    }
-                }
-
-                tr.Commit();
-            }
-
-            return attachments;
-        }
-
-        [CommandMethod("METALTAKEOFF")]
-        public async void MetalTakeoff()
-        {
-            Document doc = Application.DocumentManager.MdiActiveDocument;
-            Database db = doc.Database;
-            Editor ed = doc.Editor;
-
-            ed.WriteMessage("\nMetal Takeoff Bridge started.");
-
-            try
-            {
-                // Get drawing name for reference
-                string drawingName = doc.Name;
-                ed.WriteMessage($"\nProcessing drawing: {drawingName}");
-
-                // Collect metal components
-                List<MetalComponentData> metalCompDataList = new List<MetalComponentData>();
-
-                using (Transaction tr = db.TransactionManager.StartTransaction())
-                {
-                    BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
-                    BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
-
-                    foreach (ObjectId objId in btr)
-                    {
-                        Entity ent = tr.GetObject(objId, OpenMode.ForRead) as Entity;
-
-                        if (ent is Polyline)
-                        {
-                            Polyline pline = ent as Polyline;
-
-                            // Check if it has METALCOMP Xdata
-                            ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
-                            if (rbComp != null)
-                            {
-                                MetalComponentData compData = new MetalComponentData
-                                {
-                                    Handle = ent.Handle.ToString(),
-                                    ChildParts = new List<ChildPartData>()
-                                };
-
-                                // Extract basic component data
-                                TypedValue[] xdataComp = rbComp.AsArray();
-                                for (int i = 1; i < xdataComp.Length; i++) // Skip app name
-                                {
-                                    if (i == 1) compData.ComponentType = xdataComp[i].Value.ToString();
-                                    if (i == 2) compData.Floor = xdataComp[i].Value.ToString();
-                                    if (i == 3) compData.Elevation = xdataComp[i].Value.ToString();
-                                }
-
-                                // Get component length
-                                if (pline.NumberOfVertices >= 2)
-                                {
-                                    Point3d startPt = pline.GetPoint3dAt(0);
-                                    Point3d endPt = pline.GetPoint3dAt(1);
-                                    compData.Length = startPt.DistanceTo(endPt);
-
-                                    compData.StartPoint = new double[] { startPt.X, startPt.Y, startPt.Z };
-                                    compData.EndPoint = new double[] { endPt.X, endPt.Y, endPt.Z };
-                                }
-
-                                // Extract child parts data
-                                string partsJson = "";
-                                bool hasMoreChunks = true;
-                                int chunkIndex = 0;
-                                await System.Threading.Tasks.Task.Delay(1);
-                                while (hasMoreChunks)
-                                {
-                                    ResultBuffer rbParts = ent.GetXDataForApplication("METALPARTS");
-                                    if (rbParts == null)
-                                    {
-                                        // No more chunks or no parts data
-                                        hasMoreChunks = false;
-                                        continue;
-                                    }
-
-                                    TypedValue[] xdataParts = rbParts.AsArray();
-                                    if (xdataParts.Length < 3) continue;
-
-                                    // Check if this is the chunk we're looking for
-                                    string indexStr = xdataParts[1].Value.ToString();
-                                    if (int.Parse(indexStr) == chunkIndex)
-                                    {
-                                        partsJson += xdataParts[2].Value.ToString();
-                                        chunkIndex += xdataParts[2].Value.ToString().Length;
-                                    }
-                                    else
-                                    {
-                                        // We've read all chunks
-                                        hasMoreChunks = false;
-                                    }
-                                }
-
-                                // If we have parts JSON, deserialize it
-                                if (!string.IsNullOrEmpty(partsJson))
-                                {
-                                    try
-                                    {
-                                        List<ChildPart> childParts = Newtonsoft.Json.JsonConvert.DeserializeObject<List<ChildPart>>(partsJson);
-
-                                        // Convert to ChildPartData for API
-                                        foreach (ChildPart part in childParts)
-                                        {
-                                            ChildPartData partData = new ChildPartData
-                                            {
-                                                Name = part.Name,
-                                                PartType = part.PartType,
-                                                LengthAdjustment = part.LengthAdjustment,
-                                                Material = part.Material,
-                                                MarkNumber = part.MarkNumber,
-                                                ActualLength = part.GetActualLength(compData.Length)
-                                            };
-
-                                            compData.ChildParts.Add(partData);
-                                        }
-                                    }
-                                    catch (System.Exception ex)
-                                    {
-                                        ed.WriteMessage($"\nError deserializing parts: {ex.Message}");
-                                    }
-                                }
-
-                                metalCompDataList.Add(compData);
-                                ed.WriteMessage($"\nCaptured metal component: Type={compData.ComponentType}, Floor={compData.Floor}, Parts={compData.ChildParts.Count}");
-                            }
-                        }
-                    }
-
-                    tr.Commit();
-                }
-
-                ed.WriteMessage($"\nCollected {metalCompDataList.Count} metal components.");
-
-                // Send data to web API
-                if (metalCompDataList.Count > 0)
-                {
-                    ed.WriteMessage("\nSending data to web application...");
-
-                    // Similar to your existing glass takeoff code
-                    // Implementation of SendMetalDataToWebApp would be similar to SendDataToWebApp
-
-                    ed.WriteMessage("\nMetal data sent for processing.");
-                }
-
-                ed.WriteMessage("\nMetal Takeoff completed successfully.");
-            }
-            catch (System.Exception ex)
-            {
-                ed.WriteMessage($"\nError: {ex.Message}");
-                ed.WriteMessage($"\nStack trace: {ex.StackTrace}");
-            }
-        }
 
         [CommandMethod("METALEDITOR")]
         public void ShowMetalEditor()
@@ -1570,208 +1129,9 @@ namespace TakeoffBridge
         }
 
 
-        // Static palette set to maintain a single instance
-        private static PaletteSet _paletteSet;
 
-        [CommandMethod("SIMULATETAKEOFF")]
-        public void SimulateTakeoff()
-        {
-            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
-            Editor ed = doc.Editor;
-            Database db = doc.Database;
 
-            ed.WriteMessage("\nSimulating Metal Takeoff...");
 
-            try
-            {
-                // Get drawing name for reference
-                string drawingName = doc.Name;
-                ed.WriteMessage($"\nProcessing drawing: {drawingName}");
 
-                // Collect metal components
-                List<MetalComponentData> metalCompDataList = new List<MetalComponentData>();
-                Dictionary<string, int> partTypeCounts = new Dictionary<string, int>();
-
-                using (Transaction tr = db.TransactionManager.StartTransaction())
-                {
-                    BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
-                    BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
-
-                    foreach (ObjectId objId in btr)
-                    {
-                        Entity ent = tr.GetObject(objId, OpenMode.ForRead) as Entity;
-
-                        if (ent is Polyline)
-                        {
-                            Polyline pline = ent as Polyline;
-
-                            // Check if it has METALCOMP Xdata
-                            ResultBuffer rbComp = ent.GetXDataForApplication("METALCOMP");
-                            if (rbComp != null)
-                            {
-                                // Create a new component data object
-                                MetalComponentData compData = new MetalComponentData
-                                {
-                                    Handle = ent.Handle.ToString(),
-                                    ChildParts = new List<ChildPartData>()
-                                };
-
-                                // Extract basic component data
-                                TypedValue[] xdataComp = rbComp.AsArray();
-                                for (int i = 1; i < xdataComp.Length; i++) // Skip app name
-                                {
-                                    if (i == 1) compData.ComponentType = xdataComp[i].Value.ToString();
-                                    if (i == 2) compData.Floor = xdataComp[i].Value.ToString();
-                                    if (i == 3) compData.Elevation = xdataComp[i].Value.ToString();
-                                }
-
-                                // Get component length
-                                if (pline.NumberOfVertices >= 2)
-                                {
-                                    Point3d startPt = pline.GetPoint3dAt(0);
-                                    Point3d endPt = pline.GetPoint3dAt(1);
-                                    compData.Length = startPt.DistanceTo(endPt);
-
-                                    compData.StartPoint = new double[] { startPt.X, startPt.Y, startPt.Z };
-                                    compData.EndPoint = new double[] { endPt.X, endPt.Y, endPt.Z };
-                                }
-
-                                // Extract child parts data
-                                string partsJson = "";
-                                bool hasMoreChunks = true;
-                                int chunkIndex = 0;
-
-                                while (hasMoreChunks)
-                                {
-                                    ResultBuffer rbParts = ent.GetXDataForApplication("METALPARTS");
-                                    if (rbParts == null)
-                                    {
-                                        // No more chunks or no parts data
-                                        hasMoreChunks = false;
-                                        continue;
-                                    }
-
-                                    TypedValue[] xdataParts = rbParts.AsArray();
-                                    if (xdataParts.Length < 3) continue;
-
-                                    // Check if this is the chunk we're looking for
-                                    string indexStr = xdataParts[1].Value.ToString();
-                                    if (int.Parse(indexStr) == chunkIndex)
-                                    {
-                                        partsJson += xdataParts[2].Value.ToString();
-                                        chunkIndex += xdataParts[2].Value.ToString().Length;
-                                    }
-                                    else
-                                    {
-                                        // We've read all chunks
-                                        hasMoreChunks = false;
-                                    }
-                                }
-
-                                // If we have parts JSON, deserialize it
-                                if (!string.IsNullOrEmpty(partsJson))
-                                {
-                                    try
-                                    {
-                                        List<ChildPart> childParts = Newtonsoft.Json.JsonConvert.DeserializeObject<List<ChildPart>>(partsJson);
-
-                                        // Convert to ChildPartData for API
-                                        foreach (ChildPart part in childParts)
-                                        {
-                                            ChildPartData partData = new ChildPartData
-                                            {
-                                                Name = part.Name,
-                                                PartType = part.PartType,
-                                                LengthAdjustment = part.LengthAdjustment,
-                                                Material = part.Material,
-                                                MarkNumber = part.MarkNumber,
-                                                ActualLength = part.GetActualLength(compData.Length)
-                                            };
-
-                                            // Assign a simulated mark number
-                                            string partTypeKey = partData.PartType;
-                                            if (!partTypeCounts.ContainsKey(partTypeKey))
-                                            {
-                                                partTypeCounts[partTypeKey] = 1;
-                                            }
-                                            else
-                                            {
-                                                partTypeCounts[partTypeKey]++;
-                                            }
-
-                                            partData.MarkNumber = $"{partData.PartType}-{partTypeCounts[partTypeKey]:D3}";
-                                            compData.ChildParts.Add(partData);
-                                        }
-                                    }
-                                    catch (System.Exception ex)
-                                    {
-                                        ed.WriteMessage($"\nError deserializing parts: {ex.Message}");
-                                    }
-                                }
-
-                                metalCompDataList.Add(compData);
-                            }
-                        }
-                    }
-
-                    tr.Commit();
-                }
-
-                // Print takeoff summary
-                ed.WriteMessage($"\n\n=== METAL TAKEOFF SUMMARY ===");
-                ed.WriteMessage($"\nDrawing: {drawingName}");
-                ed.WriteMessage($"\nComponents: {metalCompDataList.Count}");
-
-                // Print part totals by type
-                ed.WriteMessage($"\n\n--- Part Counts by Type ---");
-                foreach (var pair in partTypeCounts)
-                {
-                    ed.WriteMessage($"\n{pair.Key}: {pair.Value}");
-                }
-
-                // Print detailed component info
-                ed.WriteMessage($"\n\n--- Component Details ---");
-                foreach (var comp in metalCompDataList)
-                {
-                    ed.WriteMessage($"\n\nComponent: {comp.ComponentType} (Floor {comp.Floor}, Elev {comp.Elevation})");
-                    ed.WriteMessage($"\nLength: {comp.Length:F4}");
-                    ed.WriteMessage($"\nParts:");
-
-                    foreach (var part in comp.ChildParts)
-                    {
-                        ed.WriteMessage($"\n  {part.MarkNumber}: {part.Name}, {part.ActualLength:F4} units, {part.Material}");
-                    }
-                }
-
-                ed.WriteMessage($"\n\n=== END OF TAKEOFF ===");
-            }
-            catch (System.Exception ex)
-            {
-                ed.WriteMessage($"\nError: {ex.Message}");
-            }
-        }
-    }
-
-    // Data classes for API communication
-    public class MetalComponentData
-    {
-        public string Handle { get; set; }
-        public string ComponentType { get; set; }
-        public string Floor { get; set; }
-        public string Elevation { get; set; }
-        public double Length { get; set; }
-        public double[] StartPoint { get; set; }
-        public double[] EndPoint { get; set; }
-        public List<ChildPartData> ChildParts { get; set; }
-    }
-
-    public class ChildPartData
-    {
-        public string Name { get; set; }
-        public string PartType { get; set; }
-        public double LengthAdjustment { get; set; }
-        public double ActualLength { get; set; }
-        public string Material { get; set; }
-        public string MarkNumber { get; set; }
     }
 }

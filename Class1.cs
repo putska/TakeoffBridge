@@ -21,6 +21,9 @@ using TakeoffBridge;
 [assembly: CommandClass(typeof(TakeoffBridge.ElevationManagerCommands))]
 [assembly: CommandClass(typeof(TakeoffBridge.TemplateGeneratorCommands))]
 [assembly: CommandClass(typeof(TakeoffBridge.FabricationTicketCommands))]
+[assembly: CommandClass(typeof(TakeoffBridge.WorkPointManager))]
+[assembly: CommandClass(typeof(TakeoffBridge.MullionPlacementData))]
+[assembly: CommandClass(typeof(TakeoffBridge.FabricationManager))]
 
 namespace GlassTakeoffBridge
 {

@@ -127,7 +127,7 @@ namespace TakeoffBridge
             // Get component and attachment data similar to TemplateGenerator
             var attachments = LoadAttachmentsFromDrawing();
             Dictionary<string, string> componentTypesByHandle = new Dictionary<string, string>();
-            Dictionary<string, List<TemplateGenerator.ChildPart>> partsByComponentHandle = new Dictionary<string, List<TemplateGenerator.ChildPart>>();
+            Dictionary<string, List<ChildPart>> partsByComponentHandle = new Dictionary<string, List<ChildPart>>();
 
             using (Transaction tr = db.TransactionManager.StartTransaction())
             {
@@ -146,7 +146,7 @@ namespace TakeoffBridge
                     {
                         componentTypesByHandle[component.Handle.ToString()] = componentType;
 
-                        List<TemplateGenerator.ChildPart> childParts = GetChildParts(component);
+                        List<ChildPart> childParts = GetChildParts(component);
                         partsByComponentHandle[component.Handle.ToString()] = childParts;
 
                         // Process each actual part for fabrication
@@ -183,7 +183,7 @@ namespace TakeoffBridge
                     // Check if we have data for this vertical component
                     if (partsByComponentHandle.ContainsKey(vertHandle))
                     {
-                        List<TemplateGenerator.ChildPart> verticalParts = partsByComponentHandle[vertHandle];
+                        List<ChildPart> verticalParts = partsByComponentHandle[vertHandle];
 
                         // Find the matching vertical part
                         foreach (var part in verticalParts)
@@ -234,15 +234,40 @@ namespace TakeoffBridge
 
         // Helper to calculate part length - in a real implementation this would consider
         // component geometry, start/end adjustments, etc.
-        private double CalculatePartLength(Entity component, TemplateGenerator.ChildPart part)
+        private double CalculatePartLength(Entity component, ChildPart part)
         {
-            // Placeholder implementation - in reality would calculate based on:
-            // - Component geometry length
-            // - Part's length adjustment value
-            // - Start/end adjustments
+            // First check if it's a fixed length part
+            if (part.IsFixedLength)
+            {
+                return part.FixedLength;
+            }
 
-            // For now, return a default or mock calculation
-            return 60.0; // Example default length
+            try
+            {
+                // Extract basic length from polyline geometry
+                double baseLength = 0;
+
+                if (component is Polyline pline)
+                {
+                    baseLength = pline.Length;
+                }
+                else if (component is Polyline2d pline2d)
+                {
+                    baseLength = pline2d.Length;
+                }
+                else if (component is Polyline3d pline3d)
+                {
+                    baseLength = pline3d.Length;
+                }
+
+                // Apply only StartAdjustment and EndAdjustment (not LengthAdjustment)
+                return baseLength + part.StartAdjustment + part.EndAdjustment;
+            }
+            catch
+            {
+                // Fallback to fixed length or default
+                return part.IsFixedLength ? part.FixedLength : 60.0;
+            }
         }
 
         // Helper method to get all metal components
@@ -291,10 +316,10 @@ namespace TakeoffBridge
             return null;
         }
 
-        private List<TemplateGenerator.ChildPart> GetChildParts(Entity ent)
+        private List<ChildPart> GetChildParts(Entity ent)
         {
             // Implementation identical to the one in TemplateGenerator
-            List<TemplateGenerator.ChildPart> result = new List<TemplateGenerator.ChildPart>();
+            List<ChildPart> result = new List<ChildPart>();
             // Get info about parts chunks
             int numChunks = 0;
             ResultBuffer rbInfo = ent.GetXDataForApplication("METALPARTSINFO");
@@ -335,7 +360,7 @@ namespace TakeoffBridge
                 {
                     try
                     {
-                        result = JsonConvert.DeserializeObject<List<TemplateGenerator.ChildPart>>(jsonBuilder.ToString());
+                        result = JsonConvert.DeserializeObject<List<ChildPart>>(jsonBuilder.ToString());
                     }
                     catch (System.Exception ex)
                     {
@@ -346,10 +371,10 @@ namespace TakeoffBridge
             return result;
         }
 
-        private List<TemplateGenerator.Attachment> LoadAttachmentsFromDrawing()
+        private List<Attachment> LoadAttachmentsFromDrawing()
         {
             // Implementation identical to the one in TemplateGenerator
-            List<TemplateGenerator.Attachment> loadedAttachments = new List<TemplateGenerator.Attachment>();
+            List<Attachment> loadedAttachments = new List<Attachment>();
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Database db = doc.Database;
             Editor editor = doc.Editor;
@@ -373,7 +398,7 @@ namespace TakeoffBridge
                             if (values.Length > 0 && values[0].TypeCode == (int)DxfCode.Text)
                             {
                                 string json = values[0].Value.ToString();
-                                loadedAttachments = JsonConvert.DeserializeObject<List<TemplateGenerator.Attachment>>(json);
+                                loadedAttachments = JsonConvert.DeserializeObject<List<Attachment>>(json);
                             }
                         }
                     }
