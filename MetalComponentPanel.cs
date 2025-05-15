@@ -332,120 +332,173 @@ namespace TakeoffBridge
         private void InitializeComponent()
         {
             this.Text = "Enhanced Metal Component Editor";
-            this.Width = 600; // Increased width for visualization panel
-            this.Height = 700; // Increased height for visualization panel
+            this.Width = 600;
+            this.Height = 800;
+            this.AutoScaleMode = AutoScaleMode.Dpi; // Automatically scale based on DPI settings
 
-            // Parent info section
+            // Suspend layout to improve performance during initialization
+            this.SuspendLayout();
+
+            // Create the main TableLayoutPanel that will contain all other controls
+            TableLayoutPanel mainLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 5, // Header, Component Props, Visualization, Attachments, Parts List & Buttons
+                Padding = new Padding(10),
+            };
+
+            // Add row styles to control proportional sizing
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 160)); // Component properties section
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 30));   // Visual panel
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 40));   // Attachment panel
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 30));   // Parts list
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 100)); // Buttons
+
+            this.Controls.Add(mainLayout);
+
+            // ========== COMPONENT PROPERTIES SECTION ==========
+            TableLayoutPanel propertiesPanel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 6, // Type, Floor, Elevation, Length, Save button
+                AutoSize = true
+            };
+
+            // Set column styles
+            propertiesPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110)); // Label column
+            propertiesPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));  // Content column
+
+            // Title spanning both columns
             Label lblParentSection = new Label
             {
                 Text = "Component Properties:",
-                Left = 10,
-                Top = 10,
-                Width = 380,
+                Dock = DockStyle.Fill,
                 Font = new System.Drawing.Font(this.Font, System.Drawing.FontStyle.Bold)
             };
-            this.Controls.Add(lblParentSection);
+            propertiesPanel.Controls.Add(lblParentSection, 0, 0);
+            propertiesPanel.SetColumnSpan(lblParentSection, 2);
 
-            Label lblType = new Label { Text = "Type:", Left = 10, Top = 40, Width = 100 };
-            this.Controls.Add(lblType);
+            // Type row
+            Label lblType = new Label { Text = "Type:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+            propertiesPanel.Controls.Add(lblType, 0, 1);
 
-            txtComponentType = new TextBox { Left = 120, Top = 40, Width = 150 };
-            this.Controls.Add(txtComponentType);
+            txtComponentType = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(0, 3, 3, 3) };
+            propertiesPanel.Controls.Add(txtComponentType, 1, 1);
 
-            Label lblFloor = new Label { Text = "Floor:", Left = 10, Top = 70, Width = 100 };
-            this.Controls.Add(lblFloor);
+            // Floor row
+            Label lblFloor = new Label { Text = "Floor:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+            propertiesPanel.Controls.Add(lblFloor, 0, 2);
 
-            txtFloor = new TextBox { Left = 120, Top = 70, Width = 150 };
-            this.Controls.Add(txtFloor);
+            txtFloor = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(0, 3, 3, 3) };
+            propertiesPanel.Controls.Add(txtFloor, 1, 2);
 
-            Label lblElevation = new Label { Text = "Elevation:", Left = 10, Top = 100, Width = 100 };
-            this.Controls.Add(lblElevation);
+            // Elevation row
+            Label lblElevation = new Label { Text = "Elevation:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+            propertiesPanel.Controls.Add(lblElevation, 0, 3);
 
-            txtElevation = new TextBox { Left = 120, Top = 100, Width = 150 };
-            this.Controls.Add(txtElevation);
+            txtElevation = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(0, 3, 3, 3) };
+            propertiesPanel.Controls.Add(txtElevation, 1, 3);
 
-            // Add length display
-            Label lblLengthCaption = new Label { Text = "Length:", Left = 10, Top = 130, Width = 100 };
-            this.Controls.Add(lblLengthCaption);
+            // Length row
+            Label lblLengthCaption = new Label { Text = "Length:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+            propertiesPanel.Controls.Add(lblLengthCaption, 0, 4);
 
-            lblLength = new Label { Text = "0.0", Left = 120, Top = 130, Width = 150 };
-            this.Controls.Add(lblLength);
+            lblLength = new Label { Text = "0.0", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+            propertiesPanel.Controls.Add(lblLength, 1, 4);
 
+            // Save button - explicitly in its own row
             btnSaveParent = new Button
             {
                 Text = "Save Component",
-                Left = 120,
-                Top = 160,
-                Width = 150
+                Dock = DockStyle.Left, 
+                Width = 150,
+                Height = 30,
+                Margin = new Padding(0, 10, 0, 0)
             };
             btnSaveParent.Click += BtnSaveParent_Click;
-            this.Controls.Add(btnSaveParent);
 
-            // Add visualization panel
+            // Add the button to the grid with some margin and alignment
+            propertiesPanel.Controls.Add(btnSaveParent, 1, 5);
+
+            mainLayout.Controls.Add(propertiesPanel, 0, 0);
+
+            // ========== VISUALIZATION PANEL SECTION ==========
+            Panel visualContainer = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Padding = new Padding(0, 10, 0, 0)
+            };
+
             Label lblVisualization = new Label
             {
-                Text = "Part Visualization:",
-                Left = 10,
-                Top = 200,
-                Width = 580,
+                Text = "",
+                Dock = DockStyle.Bottom,
                 Font = new System.Drawing.Font(this.Font, System.Drawing.FontStyle.Bold)
             };
-            this.Controls.Add(lblVisualization);
+            visualContainer.Controls.Add(lblVisualization);
 
             visualPanel = new Panel
             {
-                Left = 10,
-                Top = 230,
-                Width = 580,
-                Height = 150,
+                Dock = DockStyle.Fill,
                 BorderStyle = BorderStyle.FixedSingle,
-                BackColor = Color.White
+                BackColor = Color.White,
+                Margin = new Padding(0, 5, 0, 0)
             };
             visualPanel.Paint += VisualPanel_Paint;
-            this.Controls.Add(visualPanel);
+            visualContainer.Controls.Add(visualPanel);
 
-            // Create an attachment visualization panel
+            mainLayout.Controls.Add(visualContainer, 0, 1);
+
+            // ========== ATTACHMENTS PANEL SECTION ==========
+            Panel attachmentContainer = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Padding = new Padding(0, 10, 0, 0)
+            };
+
             Label lblAttachments = new Label
             {
-                Text = "Attachments:",
-                Left = 10,
-                Top = 390,
-                Width = 580,
+                Text = "Attachments",
+                Dock = DockStyle.Bottom,
                 Font = new System.Drawing.Font(this.Font, System.Drawing.FontStyle.Bold)
             };
-            this.Controls.Add(lblAttachments);
+            attachmentContainer.Controls.Add(lblAttachments);
 
             attachmentPanel = new Panel
             {
-                Left = 10,
-                Top = 420,
-                Width = 580,
-                Height = 150,
+                Dock = DockStyle.Fill,
                 BorderStyle = BorderStyle.FixedSingle,
-                BackColor = Color.White
+                BackColor = Color.White,
+                Margin = new Padding(0, 5, 0, 0)
             };
             attachmentPanel.Paint += AttachmentPanel_Paint;
-            this.Controls.Add(attachmentPanel);
+            attachmentContainer.Controls.Add(attachmentPanel);
 
-            // Child parts section
+            mainLayout.Controls.Add(attachmentContainer, 0, 2);
+
+            // ========== PARTS LIST SECTION ==========
+            Panel partsContainer = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Padding = new Padding(0, 25, 0, 0)
+            };
+
             Label lblParts = new Label
             {
-                Text = "Child Parts:",
-                Left = 10,
-                Top = 580,
-                Width = 100,
+                Text = "Parts List",
+                Dock = DockStyle.Bottom,
                 Font = new System.Drawing.Font(this.Font, System.Drawing.FontStyle.Bold)
             };
-            this.Controls.Add(lblParts);
+            partsContainer.Controls.Add(lblParts);
 
             partsList = new ListView
             {
-                Left = 10,
-                Top = 610,
-                Width = 580,
-                Height = 200,
+                Dock = DockStyle.Fill,
                 View = View.Details,
-                FullRowSelect = true
+                FullRowSelect = true,
+                Margin = new Padding(0, 0, 0, 0)
             };
             partsList.Columns.Add("Name", 100);
             partsList.Columns.Add("Type", 60);
@@ -453,11 +506,10 @@ namespace TakeoffBridge
             partsList.Columns.Add("Fixed", 50);
             partsList.Columns.Add("ShopUse", 50);
             partsList.Columns.Add("Adj Left", 70);  // Column 5 (0-based index)
-            partsList.Columns.Add("Adj Right", 70);    // Column 6 (0-based index)
+            partsList.Columns.Add("Adj Right", 70); // Column 6 (0-based index)
             partsList.Columns.Add("Attach", 50);
             partsList.Columns.Add("Finish", 80);
             partsList.Columns.Add("Fab", 80);
-            this.Controls.Add(partsList);
 
             // Add the double-click handler
             partsList.DoubleClick += PartsList_DoubleClick;
@@ -465,79 +517,74 @@ namespace TakeoffBridge
             // Add selection changed handler to update the visualization
             partsList.SelectedIndexChanged += (s, e) => visualPanel.Invalidate();
 
-            // Part management buttons
-            btnAddPart = new Button { Text = "Add Part", Left = 10, Top = 850, Width = 80 };
+            partsContainer.Controls.Add(partsList);
+            mainLayout.Controls.Add(partsContainer, 0, 3);
+
+            // ========== BUTTONS SECTION ==========
+            TableLayoutPanel buttonPanel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 8,
+                RowCount = 2,
+                AutoSize = true
+            };
+
+            // Set equal column widths
+            for (int i = 0; i < 8; i++)
+            {
+                buttonPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 12.5F));
+            }
+
+            // First row of buttons
+            btnAddPart = new Button { Text = "Add Part", Dock = DockStyle.Fill, Margin = new Padding(3) };
             btnAddPart.Click += BtnAddPart_Click;
-            this.Controls.Add(btnAddPart);
+            buttonPanel.Controls.Add(btnAddPart, 0, 0);
 
-            btnEditPart = new Button { Text = "Edit Part", Left = 100, Top = 850, Width = 80 };
+            btnEditPart = new Button { Text = "Edit Part", Dock = DockStyle.Fill, Margin = new Padding(3) };
             btnEditPart.Click += BtnEditPart_Click;
-            this.Controls.Add(btnEditPart);
+            buttonPanel.Controls.Add(btnEditPart, 1, 0);
 
-            btnDeletePart = new Button { Text = "Delete Part", Left = 190, Top = 850, Width = 80 };
+            btnDeletePart = new Button { Text = "Delete Part", Dock = DockStyle.Fill, Margin = new Padding(3) };
             btnDeletePart.Click += BtnDeletePart_Click;
-            this.Controls.Add(btnDeletePart);
+            buttonPanel.Controls.Add(btnDeletePart, 2, 0);
 
-            btnSave = new Button { Text = "Save Changes", Left = 280, Top = 850, Width = 100 };
+            btnSave = new Button { Text = "Save Changes", Dock = DockStyle.Fill, Margin = new Padding(3) };
             btnSave.Click += BtnSave_Click;
-            this.Controls.Add(btnSave);
+            buttonPanel.Controls.Add(btnSave, 3, 0);
 
-            // Add a separator line before the command buttons
-            Panel separatorLine = new Panel
-            {
-                Left = 10,
-                Top = 870, // Just above the buttons
-                Width = 580,
-                Height = 2,
-                BackColor = Color.Gray
-            };
-            this.Controls.Add(separatorLine);
-
-            Button btnCopyProperty = new Button
-            {
-                Text = "Copy Property",
-                Left = 10,
-                Top = 900, // Adjust this based on your current layout
-                Width = 120
-            };
+            // Second row of buttons
+            Button btnCopyProperty = new Button { Text = "Copy Property", Dock = DockStyle.Fill, Margin = new Padding(3) };
             btnCopyProperty.Click += BtnCopyProperty_Click;
-            this.Controls.Add(btnCopyProperty);
+            buttonPanel.Controls.Add(btnCopyProperty, 0, 1);
 
-            Button btnDetectAttachments = new Button
-            {
-                Text = "Detect Attachments",
-                Left = 140,
-                Top = 900, // Same top position as the previous button
-                Width = 120
-            };
+            Button btnDetectAttachments = new Button { Text = "Detect Attachments", Dock = DockStyle.Fill, Margin = new Padding(3) };
             btnDetectAttachments.Click += BtnDetectAttachments_Click;
-            this.Controls.Add(btnDetectAttachments);
+            buttonPanel.Controls.Add(btnDetectAttachments, 1, 1);
 
-            Button btnAddMetalPart = new Button
-            {
-                Text = "Add Metal Part",
-                Left = 270,
-                Top = 900, // Same top position
-                Width = 120
-            };
+            Button btnAddMetalPart = new Button { Text = "Add Metal Part", Dock = DockStyle.Fill, Margin = new Padding(3) };
             btnAddMetalPart.Click += BtnAddMetalPart_Click;
-            this.Controls.Add(btnAddMetalPart);
+            buttonPanel.Controls.Add(btnAddMetalPart, 2, 1);
 
-            // Initially disable buttons until something is selected
-            SetControlsEnabled(false);
+            mainLayout.Controls.Add(buttonPanel, 0, 4);
 
+            // Status label
             statusLabel = new Label
             {
                 Text = "",
-                Left = 10,
-                Top = 950, // Adjust based on your layout
-                Width = 580,
+                Dock = DockStyle.Bottom,
                 Height = 20,
                 TextAlign = ContentAlignment.MiddleLeft,
                 BorderStyle = BorderStyle.None,
                 Visible = false
             };
             this.Controls.Add(statusLabel);
+
+            // Initially disable buttons until something is selected
+            SetControlsEnabled(false);
+
+            // Resume layout
+            this.ResumeLayout(false);
+            this.PerformLayout();
         }
 
         private void VisualPanel_Paint(object sender, PaintEventArgs e)
@@ -554,11 +601,16 @@ namespace TakeoffBridge
             // Add padding around the edges
             int borderPadding = 25;
 
+            // for fixed length parts
+            StringFormat near = new StringFormat { Alignment = StringAlignment.Near }; // left
+            StringFormat far = new StringFormat { Alignment = StringAlignment.Far }; // right
+            StringFormat none = new StringFormat { Alignment = StringAlignment.Center }; // center
+
             // Set scaling factor to fit component in panel with padding
             double scaleFactor = (visualPanel.Width - (borderPadding * 2)) / currentComponentLength;
 
             // Draw the baseline representing the component
-            int yBase = visualPanel.Height / 2;
+            int yBase = (int)(visualPanel.Height * 0.8);
             int xStart = borderPadding;
             int xEnd = xStart + (int)(currentComponentLength * scaleFactor);
 
@@ -582,19 +634,23 @@ namespace TakeoffBridge
             Brush[] partBrushes = new Brush[] { Brushes.LightBlue, Brushes.LightGreen, Brushes.LightPink, Brushes.LightYellow, Brushes.LightCoral };
 
             // Determine spacing for parts
-            int partHeight = 15;  // Height of each part
+            int partHeight = 20;  // Height of each part
 
             // Calculate available space and adjust spacing
-            int totalAvailableVerticalSpace = yBase - borderPadding;
+            int totalAvailableVerticalSpace = yBase - (borderPadding * 2);
 
             // Make sure we can fit all the parts with some spacing
-            int partSpacing = Math.Max(5, Math.Min(15, (totalAvailableVerticalSpace - (currentParts.Count * partHeight)) / (currentParts.Count + 1)));
+            int partSpacing = Math.Max(25, Math.Min(35, (totalAvailableVerticalSpace - (currentParts.Count * partHeight)) / (currentParts.Count + 1)));
 
             // Debug
             System.Diagnostics.Debug.WriteLine($"Available space: {totalAvailableVerticalSpace}, Parts: {currentParts.Count}, Spacing: {partSpacing}");
 
             foreach (ChildPart part in currentParts)
             {
+                StringFormat fmt = none;      // default
+                if (part.Attach == "L") fmt = near;
+                else if (part.Attach == "R") fmt = far;
+
                 // Debug
                 System.Diagnostics.Debug.WriteLine($"Drawing part {partIndex + 1}: {part.Name}");
 
@@ -603,6 +659,7 @@ namespace TakeoffBridge
 
                 if (part.IsFixedLength)
                 {
+
                     // For fixed length parts, center on the component unless they have an attachment side
                     double fixedLengthInPixels = part.FixedLength * scaleFactor;
 
@@ -644,7 +701,7 @@ namespace TakeoffBridge
                 }
 
                 // Calculate vertical position for this part - from top of panel downward
-                int partY = borderPadding + (partIndex * (partHeight + partSpacing));
+                int partY = borderPadding * 2 + (partIndex * (partHeight + partSpacing));
 
                 // Debug
                 System.Diagnostics.Debug.WriteLine($"Part {part.Name} at Y = {partY}, partStart = {partStart}, partEnd = {partEnd}");
@@ -690,9 +747,15 @@ namespace TakeoffBridge
                     displayName = $"{part.Name} ({part.StartAdjustment:F2}, {part.EndAdjustment:F2})";
                 }
 
-                // Center the text and adjust position for readability
-                int textX = partStart + (partEnd - partStart) / 2 - (int)(g.MeasureString(displayName, nameFont).Width / 2);
-                g.DrawString(displayName, nameFont, Brushes.Black, textX, partY - nameFont.Height - 2);
+                // --- centred text rectangle ---
+                RectangleF nameBox = new RectangleF(
+                        partStart,                            // left edge of the bar
+                        partY - nameFont.Height - 2,          // just above the bar
+                        partEnd - partStart,                  // same width as the bar
+                        nameFont.Height + 4);
+
+                StringFormat centred = new StringFormat { Alignment = StringAlignment.Center };
+                g.DrawString(displayName, nameFont, Brushes.Black, nameBox, fmt);
 
                 // Add Finish and Fab info if they exist
                 string extraInfo = "";
@@ -712,9 +775,12 @@ namespace TakeoffBridge
                     System.Drawing.Font infoFont = new System.Drawing.Font(this.Font.FontFamily, 7, FontStyle.Italic);
                     float extraInfoWidth = g.MeasureString(extraInfo, infoFont).Width;
                     int extraTextX = partStart + (partEnd - partStart) / 2 - (int)(extraInfoWidth / 2);
+                    if (string.IsNullOrEmpty(part.Attach))
+                    {
+                                            // Position it inside the part
+                    g.DrawString(extraInfo, infoFont, Brushes.DarkSlateBlue, extraTextX, partY - 1);
+                    }
 
-                    // Position it above the part name
-                    g.DrawString(extraInfo, infoFont, Brushes.DarkSlateBlue, extraTextX, partY - nameFont.Height * 2 - 7);
                 }
 
                 // Draw attachment indicators if applicable with better positioning
@@ -761,12 +827,7 @@ namespace TakeoffBridge
                 colorIndex++;
             }
 
-            // Draw a subtle border around the entire visualization area
-            g.DrawRectangle(new Pen(Color.Gray, 1),
-                            borderPadding / 2,
-                            borderPadding / 2,
-                            visualPanel.Width - borderPadding,
-                            visualPanel.Height - borderPadding);
+
         }
 
         private void LoadComponentData(ObjectId objId)
@@ -1038,8 +1099,8 @@ namespace TakeoffBridge
 
             // Draw the vertical component line
             int xCenter = attachmentPanel.Width / 2;  // Center of panel
-            int yTop = borderPadding;
-            int yBottom = yTop + (int)(verticalLength * scaleFactor);
+            int yTop = borderPadding * 3;
+            int yBottom = attachmentPanel.Height - borderPadding * 3; // Leave space at bottom
 
             // Draw vertical line
             g.DrawLine(new Pen(Color.Black, 3), xCenter, yTop, xCenter, yBottom);
@@ -1076,12 +1137,7 @@ namespace TakeoffBridge
             g.DrawString("Right Side", new System.Drawing.Font(this.Font, FontStyle.Bold), Brushes.Red,
                          attachmentPanel.Width - 80, 10);
 
-            // Draw a subtle border around the entire visualization area
-            g.DrawRectangle(new Pen(Color.Gray, 1),
-                            borderPadding / 2,
-                            borderPadding / 2,
-                            attachmentPanel.Width - borderPadding,
-                            attachmentPanel.Height - borderPadding);
+
         }
 
         private void DrawSideAttachments(Graphics g, List<Attachment> attachments, int xCenter, int yTop, int yBottom,
