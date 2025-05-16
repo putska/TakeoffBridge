@@ -2203,10 +2203,26 @@ namespace TakeoffBridge
                 MetalComponentCommands.PendingOpeningData.CreateLeft = true;
                 MetalComponentCommands.PendingOpeningData.CreateRight = true;
 
-                // Add a special flag to force dialog to open
+                // Force the dialog to open
                 MetalComponentCommands.PendingOpeningData.ForceDialogToOpen = true;
 
-                // Enable this debug output to track what's happening
+                // IMPORTANT: Also set the current parts as PendingParts
+                if (currentParts != null && currentParts.Count > 0)
+                {
+                    // Create a deep copy of the parts
+                    List<ChildPart> partsCopy = new List<ChildPart>();
+                    foreach (var part in currentParts)
+                    {
+                        partsCopy.Add(part);
+                    }
+
+                    // Set the pending parts
+                    MetalComponentCommands.PendingParts = partsCopy;
+
+                    System.Diagnostics.Debug.WriteLine($"Setting {partsCopy.Count} pending parts from panel");
+                }
+
+                // Debug output
                 System.Diagnostics.Debug.WriteLine("---- SETTING OPENING DATA IN PANEL ----");
                 System.Diagnostics.Debug.WriteLine($"Floor: {MetalComponentCommands.PendingOpeningData.Floor}");
                 System.Diagnostics.Debug.WriteLine($"Elevation: {MetalComponentCommands.PendingOpeningData.Elevation}");
@@ -2216,10 +2232,12 @@ namespace TakeoffBridge
                 System.Diagnostics.Debug.WriteLine($"RightType: {MetalComponentCommands.PendingOpeningData.RightType}");
                 System.Diagnostics.Debug.WriteLine("---- END SETTING OPENING DATA ----");
 
-                // Directly execute the command
+                // Execute the command
                 doc.SendStringToExecute("CREATEOPENINGCOMPONENTS ", true, false, false);
 
-
+                // Show a message to the user
+                MessageBox.Show("Opening component dialog will open. After configuring settings, follow prompts to select the center of an opening.",
+                               "Create Opening Components", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (System.Exception ex)
             {

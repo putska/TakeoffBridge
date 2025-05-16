@@ -430,12 +430,26 @@ namespace TakeoffBridge
                 }
             }
 
+            // Get the layer ID for the tag layer
+            ObjectId tagLayerId = ObjectId.Null;
+
+            LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+            if (lt != null) {
+                if (lt.Has("Tag4"))
+                {
+                    tagLayerId = lt["Tag4"];
+                }
+            }
+
             // Create the MText object
             MText mtext = new MText();
             mtext.Contents = markNumber;
             mtext.Location = textPosition;
             mtext.TextHeight = _textHeight;
             mtext.Rotation = rotationAngle;
+            if (tagLayerId != ObjectId.Null) { 
+                mtext.LayerId = tagLayerId; 
+            }
 
             // Set text style
             ObjectId textStyleId = GetTextStyleId(tr, _textStyleName);

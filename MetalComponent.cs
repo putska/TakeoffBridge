@@ -425,6 +425,15 @@ namespace TakeoffBridge
                     trReg.Commit();
                 }
 
+                LayerTable lt = (LayerTable)db.LayerTableId.GetObject(OpenMode.ForRead);
+                ObjectId tagLayerId = ObjectId.Null;
+
+                if (lt.Has("TAG"))
+                {
+                    // If TAG layer exists, set the polyline's layer to TAG
+                    tagLayerId = lt["TAG"];
+                }
+
                 // Now create everything in a single transaction
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
@@ -442,6 +451,12 @@ namespace TakeoffBridge
                     // Add polyline to the database
                     ObjectId plineId = btr.AppendEntity(pline);
                     tr.AddNewlyCreatedDBObject(pline, true);
+
+                    if (tagLayerId != ObjectId.Null)
+                    {
+                        // If TAG layer exists, set the polyline's layer to TAG
+                        pline.LayerId = tagLayerId;
+                    }
 
                     // Add component Xdata
                     ResultBuffer rbComp = new ResultBuffer(
@@ -1369,6 +1384,12 @@ namespace TakeoffBridge
                 bool createLeft = true;
                 bool createRight = true;
 
+                // Child parts for each side - This is the key addition
+                List<ChildPart> topParts = null;
+                List<ChildPart> bottomParts = null;
+                List<ChildPart> leftParts = null;
+                List<ChildPart> rightParts = null;
+
                 // Flag to control dialog display
                 bool showDialog = true;
 
@@ -1376,8 +1397,6 @@ namespace TakeoffBridge
                 if (PendingOpeningData != null)
                 {
                     System.Diagnostics.Debug.WriteLine("Found PendingOpeningData");
-                    System.Diagnostics.Debug.WriteLine($"Floor: {PendingOpeningData.Floor}");
-                    System.Diagnostics.Debug.WriteLine($"Elevation: {PendingOpeningData.Elevation}");
 
                     floor = PendingOpeningData.Floor ?? floor;
                     elevation = PendingOpeningData.Elevation ?? elevation;
@@ -1393,10 +1412,25 @@ namespace TakeoffBridge
                     createRight = PendingOpeningData.CreateRight;
 
                     // Always show dialog when ForceDialogToOpen is true
-                    // If ForceDialogToOpen property doesn't exist, always show dialog
                     showDialog = PendingOpeningData.GetType().GetProperty("ForceDialogToOpen") != null ?
                                 (bool)PendingOpeningData.GetType().GetProperty("ForceDialogToOpen").GetValue(PendingOpeningData, null) :
                                 true;
+
+                    // Get child parts from the panel if available
+                    if (PendingParts != null && PendingParts.Count > 0)
+                    {
+                        // Clone the parts to avoid reference issues
+                        List<ChildPart> allParts = new List<ChildPart>(PendingParts);
+
+                        // We'll use the same parts for all sides, but in a real implementation
+                        // you might want to filter or create specific parts for each side
+                        topParts = allParts;
+                        bottomParts = allParts;
+                        leftParts = allParts;
+                        rightParts = allParts;
+
+                        System.Diagnostics.Debug.WriteLine($"Found {allParts.Count} pending parts to use for components");
+                    }
                 }
 
                 // If we need to show the dialog, do it
@@ -1481,18 +1515,18 @@ namespace TakeoffBridge
                         // Sort points to ensure proper order (bottom-left, bottom-right, top-right, top-left)
                         boundaryPoints = SortPoints(boundaryPoints);
 
-                        // Check which sides to create
+                        // Check which sides to create - Pass the child parts
                         if (createBottom)
-                            CreateSideComponent(tr, boundaryPoints[0], boundaryPoints[1], bottomType, floor, elevation);
+                            CreateSideComponent(tr, boundaryPoints[0], boundaryPoints[1], bottomType, floor, elevation, bottomParts);
 
                         if (createRight)
-                            CreateSideComponent(tr, boundaryPoints[1], boundaryPoints[2], rightType, floor, elevation);
+                            CreateSideComponent(tr, boundaryPoints[1], boundaryPoints[2], rightType, floor, elevation, rightParts);
 
                         if (createTop)
-                            CreateSideComponent(tr, boundaryPoints[2], boundaryPoints[3], topType, floor, elevation);
+                            CreateSideComponent(tr, boundaryPoints[2], boundaryPoints[3], topType, floor, elevation, topParts);
 
                         if (createLeft)
-                            CreateSideComponent(tr, boundaryPoints[3], boundaryPoints[0], leftType, floor, elevation);
+                            CreateSideComponent(tr, boundaryPoints[3], boundaryPoints[0], leftType, floor, elevation, leftParts);
 
                         tr.Commit();
                     }
@@ -1626,14 +1660,15 @@ namespace TakeoffBridge
             return points.OrderBy(p => Math.Atan2(p.Y - centroid.Y, p.X - centroid.X)).ToList();
         }
 
-        // Create a new component on a side
+        // Modify the CreateSideComponent method to accept custom parts
         private void CreateSideComponent(Transaction tr, Point3d startPoint, Point3d endPoint,
-                                        string componentType, string floor, string elevation)
+                                       string componentType, string floor, string elevation,
+                                       List<ChildPart> customParts = null)
         {
             Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
             Database db = doc.Database;
 
-            // Get current layer for restoration
+            // Save current layer for later restoration
             ObjectId originalLayerId = db.Clayer;
 
             try
@@ -1651,6 +1686,8 @@ namespace TakeoffBridge
 
                     Polyline pline = new Polyline();
                     pline.SetDatabaseDefaults();
+                    pline.ColorIndex = 1;
+                    pline.ConstantWidth = 0.1;
                     pline.AddVertexAt(0, new Point2d(startPoint.X, startPoint.Y), 0, 0, 0);
                     pline.AddVertexAt(1, new Point2d(endPoint.X, endPoint.Y), 0, 0, 0);
 
@@ -1670,8 +1707,8 @@ namespace TakeoffBridge
                     );
                     pline.XData = rbComp;
 
-                    // Get default parts for this component type
-                    List<ChildPart> parts = GetDefaultPartsForType(componentType);
+                    // Use custom parts if provided, otherwise get default parts
+                    List<ChildPart> parts = customParts ?? GetDefaultPartsForType(componentType);
 
                     // Register all required application names
                     RegAppTable regTable = (RegAppTable)tr.GetObject(db.RegAppTableId, OpenMode.ForRead);
@@ -1684,7 +1721,7 @@ namespace TakeoffBridge
                         RegisterApp(regTable, $"METALPARTS{i}", tr);
                     }
 
-                    // Store child parts
+                    // Store child parts as JSON in additional Xdata
                     string partsJson = Newtonsoft.Json.JsonConvert.SerializeObject(parts);
 
                     // Add info Xdata
