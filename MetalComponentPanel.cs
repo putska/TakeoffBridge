@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Net.Mail;
 using System.Linq;
 using Newtonsoft.Json;
+using System.Reflection;
 
 
 namespace TakeoffBridge
@@ -44,14 +45,418 @@ namespace TakeoffBridge
         private bool isProcessingUpdate = false;
         // If you want to add a status label
         private Label statusLabel;
+        private bool isCreateMode = false;
+        private Point3d startPoint = new Point3d();
+        private Point3d endPoint = new Point3d();
 
-        public EnhancedMetalComponentPanel()
+        // Constructor modified to support both modes
+        public EnhancedMetalComponentPanel(bool createMode = false)
         {
+            isCreateMode = createMode;
             InitializeComponent();
 
-            // Connect to AutoCAD events instead of using a timer
-            ConnectToDocumentEvents();
+            // If in create mode, prepare default data
+            if (isCreateMode)
+            {
+                PrepareForCreation();
+            }
+            else
+            {
+                ConnectToDocumentEvents();
+            }
         }
+
+        private void PrepareForCreation()
+        {
+            // Clear current component data without using Invoke
+            currentComponentId = ObjectId.Null;
+            currentComponentLength = 0.0;
+
+            if (currentParts != null)
+                currentParts.Clear();
+            else
+                currentParts = new List<ChildPart>();
+
+            if (currentAttachments != null)
+                currentAttachments.Clear();
+
+            // Set default values directly
+            if (txtComponentType != null) txtComponentType.Text = "Horizontal";
+            if (txtFloor != null) txtFloor.Text = "1";
+            if (txtElevation != null) txtElevation.Text = "A";
+            if (lblLength != null) lblLength.Text = "0.0";
+
+            // Add default parts based on component type
+            LoadDefaultParts("Horizontal");
+
+            // Enable controls for editing
+            SetControlsEnabled(true);
+
+            // Find the button panel in your UI
+            // Scan through all child controls to find the TableLayoutPanel for buttons
+            TableLayoutPanel buttonPanel = null;
+            foreach (Control control in this.Controls)
+            {
+                if (control is TableLayoutPanel mainPanel)
+                {
+                    // Check if this main panel has any TableLayoutPanel children that might be our button panel
+                    foreach (Control subControl in mainPanel.Controls)
+                    {
+                        if (subControl is TableLayoutPanel panel && panel.RowCount == 2)
+                        {
+                            // This is likely our button panel with 2 rows
+                            buttonPanel = panel;
+                            break;
+                        }
+                    }
+                    if (buttonPanel != null) break;
+                }
+            }
+
+            if (buttonPanel != null)
+            {
+                // Create the Create Components button
+                Button btnCreateComponent = new Button
+                {
+                    Text = "Create Components",
+                    Dock = DockStyle.Fill,
+                    Margin = new Padding(3)
+                };
+                btnCreateComponent.Click += BtnCreateComponent_Click;
+
+                // Create the Create Opening button
+                Button btnCreateOpening = new Button
+                {
+                    Text = "Create Opening",
+                    Dock = DockStyle.Fill,
+                    Margin = new Padding(3)
+                };
+                btnCreateOpening.Click += BtnCreateOpening_Click;
+
+                // Add Create Components button to the panel
+                if (buttonPanel.ColumnCount > 4)
+                {
+                    Control existingControl = buttonPanel.GetControlFromPosition(4, 0);
+                    if (existingControl == null)
+                    {
+                        buttonPanel.Controls.Add(btnCreateComponent, 4, 0);
+                    }
+                    else
+                    {
+                        // If position is occupied, try another position or a new row
+                        buttonPanel.Controls.Add(btnCreateComponent, 4, 1);
+                    }
+                }
+                else
+                {
+                    // If panel doesn't have enough columns, add to whatever position is available
+                    buttonPanel.Controls.Add(btnCreateComponent, 0, 1);
+                }
+
+                // Add Create Opening button to the panel
+                if (buttonPanel.ColumnCount > 5)
+                {
+                    Control existingControl = buttonPanel.GetControlFromPosition(5, 0);
+                    if (existingControl == null)
+                    {
+                        buttonPanel.Controls.Add(btnCreateOpening, 5, 0);
+                    }
+                    else
+                    {
+                        // If position is occupied, try another position or a new row
+                        buttonPanel.Controls.Add(btnCreateOpening, 5, 1);
+                    }
+                }
+                else if (buttonPanel.ColumnCount > 0)
+                {
+                    // Try to add to the next row or column
+                    int col = 0;
+                    int row = 1;
+
+                    // Find an empty spot
+                    bool found = false;
+                    for (row = 0; row < buttonPanel.RowCount && !found; row++)
+                    {
+                        for (col = 0; col < buttonPanel.ColumnCount && !found; col++)
+                        {
+                            if (buttonPanel.GetControlFromPosition(col, row) == null)
+                            {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (found) break;
+                    }
+
+                    // If no empty spot, add to the first cell in second row
+                    if (!found)
+                    {
+                        col = 1;
+                        row = 1;
+                    }
+
+                    buttonPanel.Controls.Add(btnCreateOpening, col, row);
+                }
+
+                // Change Save Changes to Apply Changes for consistency
+                if (btnSave != null)
+                    btnSave.Text = "Apply Changes";
+            }
+            else
+            {
+                // If button panel not found, try to add directly to the control
+                Button btnCreateComponent = new Button
+                {
+                    Text = "Create Components",
+                    Location = new System.Drawing.Point(300, 700),
+                    Size = new System.Drawing.Size(150, 30)
+                };
+                btnCreateComponent.Click += BtnCreateComponent_Click;
+                this.Controls.Add(btnCreateComponent);
+
+                Button btnCreateOpening = new Button
+                {
+                    Text = "Create Opening",
+                    Location = new System.Drawing.Point(300, 740),
+                    Size = new System.Drawing.Size(150, 30)
+                };
+                btnCreateOpening.Click += BtnCreateOpening_Click;
+                this.Controls.Add(btnCreateOpening);
+            }
+        }
+
+        private void BtnCreateComponent_Click(object sender, EventArgs e)
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+
+            try
+            {
+                // Create a new instance of ParentComponentData
+                MetalComponentCommands.ParentComponentData parentData =
+                    new MetalComponentCommands.ParentComponentData();
+
+                // Set the values
+                parentData.ComponentType = txtComponentType.Text;
+                parentData.Floor = txtFloor.Text;
+                parentData.Elevation = txtElevation.Text;
+
+                // Assign to the static field
+                MetalComponentCommands.PendingParentData = parentData;
+
+                // Create a copy of the parts
+                if (currentParts != null && currentParts.Count > 0)
+                {
+                    // Create a new list to hold the copies
+                    List<ChildPart> partsCopy = new List<ChildPart>();
+
+                    // Copy each part
+                    foreach (ChildPart part in currentParts)
+                    {
+                        partsCopy.Add(part);
+                    }
+
+                    // Assign to the static field
+                    MetalComponentCommands.PendingParts = partsCopy;
+                }
+                else
+                {
+                    // Initialize with a new empty list if no parts exist
+                    MetalComponentCommands.PendingParts = new List<ChildPart>();
+                }
+
+                // Debug output to verify the data is set
+                System.Diagnostics.Debug.WriteLine($"Setting PendingParentData: Type={MetalComponentCommands.PendingParentData.ComponentType}, Floor={MetalComponentCommands.PendingParentData.Floor}");
+                System.Diagnostics.Debug.WriteLine($"Setting PendingParts: Count={MetalComponentCommands.PendingParts.Count}");
+
+                // Execute the ADDMETALPART command
+                doc.SendStringToExecute("ADDMETALPART ", true, false, false);
+
+
+            }
+            catch (System.Exception ex)
+            {
+                MessageBox.Show($"Error initiating component creation: {ex.Message}",
+                               "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void EnsureLayerExists(string layerName)
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Database db = doc.Database;
+
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                // Open the Layer table
+                LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+
+                if (!lt.Has(layerName))
+                {
+                    // Create the layer if it doesn't exist
+                    lt.UpgradeOpen();
+                    LayerTableRecord ltr = new LayerTableRecord();
+                    ltr.Name = layerName;
+                    ltr.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByLayer, 1); // Red
+
+                    lt.Add(ltr);
+                    tr.AddNewlyCreatedDBObject(ltr, true);
+                }
+
+                tr.Commit();
+            }
+        }
+
+        private void CreateComponent(Point3d startPt, Point3d endPt)
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Database db = doc.Database;
+
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                try
+                {
+                    // Get the TAG layer ID
+                    //LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+                    //ObjectId tagLayerId = ObjectId.Null;
+
+                    //if (lt.Has("TAG"))
+                    //{
+                    //    tagLayerId = lt["TAG"];
+                    //}
+
+                    // Create our polyline
+                    BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                    BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                    Polyline pline = new Polyline();
+                    pline.SetDatabaseDefaults();
+                    pline.AddVertexAt(0, new Point2d(startPt.X, startPt.Y), 0, 0, 0);
+                    pline.AddVertexAt(1, new Point2d(endPt.X, endPt.Y), 0, 0, 0);
+
+                    // If TAG layer exists, set the polyline's layer to TAG
+                    //if (tagLayerId != ObjectId.Null)
+                    //{
+                    //    pline.LayerId = tagLayerId;
+                    //}
+
+                    // Add polyline to database
+                    ObjectId plineId = btr.AppendEntity(pline);
+                    tr.AddNewlyCreatedDBObject(pline, true);
+
+                    // Add component data
+                    ResultBuffer rbComp = new ResultBuffer(
+                        new TypedValue((int)DxfCode.ExtendedDataRegAppName, "METALCOMP"),
+                        new TypedValue((int)DxfCode.ExtendedDataAsciiString, txtComponentType.Text),
+                        new TypedValue((int)DxfCode.ExtendedDataAsciiString, txtFloor.Text),
+                        new TypedValue((int)DxfCode.ExtendedDataAsciiString, txtElevation.Text)
+                    );
+                    pline.XData = rbComp;
+
+                    // Register all required application names
+                    RegAppTable regTable = (RegAppTable)tr.GetObject(db.RegAppTableId, OpenMode.ForRead);
+                    RegisterApp(regTable, "METALCOMP", tr);
+                    RegisterApp(regTable, "METALPARTSINFO", tr);
+
+                    // Register chunk apps preemptively
+                    for (int i = 0; i < 10; i++)
+                    {
+                        RegisterApp(regTable, $"METALPARTS{i}", tr);
+                    }
+
+                    // Store child parts
+                    string partsJson = Newtonsoft.Json.JsonConvert.SerializeObject(currentParts);
+
+                    // Add info Xdata
+                    const int maxChunkSize = 250;
+                    int numChunks = (int)Math.Ceiling((double)partsJson.Length / maxChunkSize);
+
+                    ResultBuffer rbInfo = new ResultBuffer(
+                        new TypedValue((int)DxfCode.ExtendedDataRegAppName, "METALPARTSINFO"),
+                        new TypedValue((int)DxfCode.ExtendedDataInteger32, numChunks)
+                    );
+                    pline.XData = rbInfo;
+
+                    // Add chunk Xdata
+                    for (int i = 0; i < numChunks; i++)
+                    {
+                        int startIndex = i * maxChunkSize;
+                        int length = Math.Min(maxChunkSize, partsJson.Length - startIndex);
+                        string chunk = partsJson.Substring(startIndex, length);
+
+                        ResultBuffer rbChunk = new ResultBuffer(
+                            new TypedValue((int)DxfCode.ExtendedDataRegAppName, $"METALPARTS{i}"),
+                            new TypedValue((int)DxfCode.ExtendedDataAsciiString, chunk)
+                        );
+                        pline.XData = rbChunk;
+                    }
+
+                    tr.Commit();
+
+                    // Process mark numbers
+                    using (Transaction trx = doc.Database.TransactionManager.StartTransaction())
+                    {
+                        MarkNumberManager.Instance.ProcessComponentMarkNumbers(plineId, trx, forceProcess: true);
+                        trx.Commit();
+                    }
+
+                    // Highlight the newly created component
+                    doc.Editor.WriteMessage($"\nComponent created with handle: {pline.Handle}");
+                    using (Transaction trh = doc.Database.TransactionManager.StartTransaction())
+                    {
+                        Entity ent = trh.GetObject(plineId, OpenMode.ForWrite) as Entity;
+                        if (ent != null)
+                        {
+                            ent.Highlight();
+                        }
+                        trh.Commit();
+                    }
+                }
+                catch
+                {
+                    // Rollback in case of error
+                    throw;
+                }
+            }
+        }
+
+        private void LoadDefaultParts(string componentType)
+        {
+            currentParts.Clear();
+
+            if (componentType.ToUpper().Contains("HORIZONTAL"))
+            {
+                // Add default horizontal parts
+                currentParts.Add(new ChildPart("Horizontal Body", "HB", 0.0, 0.0, "Aluminum"));
+                currentParts.Add(new ChildPart("Flat Filler", "FF", -0.03125, 0.0, "Aluminum"));
+                currentParts.Add(new ChildPart("Face Cap", "FC", 0.0, 0.0, "Aluminum"));
+
+                // Left side attachments
+                ChildPart sbLeft = new ChildPart("Shear Block Left", "SBL", -1.25, 0.0, "Aluminum");
+                sbLeft.Attach = "L";
+                currentParts.Add(sbLeft);
+
+                // Right side attachments
+                ChildPart sbRight = new ChildPart("Shear Block Right", "SBR", 0.0, -1.25, "Aluminum");
+                sbRight.Attach = "R";
+                currentParts.Add(sbRight);
+            }
+            else if (componentType.ToUpper().Contains("VERTICAL"))
+            {
+                // Add default vertical parts
+                ChildPart vb = new ChildPart("Vertical Body", "VB", 0.0, 0.0, "Aluminum");
+                vb.Clips = true;
+                currentParts.Add(vb);
+
+                currentParts.Add(new ChildPart("Pressure Plate", "PP", -0.0625, 0.0, "Aluminum"));
+                currentParts.Add(new ChildPart("Snap Cover", "SC", 0.0, -0.125, "Aluminum"));
+            }
+
+            // Update the UI
+            UpdatePartsList();
+        }
+
+
 
         private ObjectIdCollection lastSelection = new ObjectIdCollection();
 
@@ -1225,10 +1630,37 @@ namespace TakeoffBridge
                 attachmentPanel.Invalidate();
             }
 
-            // Then update the UI on the UI thread with null checks
-            Invoke(new Action(() =>
+            // Update the UI on the UI thread with null checks
+            if (this.IsHandleCreated)
             {
-                // Clear parent data fields with null checks
+                Invoke(new Action(() =>
+                {
+                    // Clear parent data fields with null checks
+                    if (txtComponentType != null) txtComponentType.Text = "";
+                    if (txtFloor != null) txtFloor.Text = "";
+                    if (txtElevation != null) txtElevation.Text = "";
+                    if (lblLength != null) lblLength.Text = "0.0";
+
+                    // Explicitly clear and refresh the parts list with null check
+                    if (partsList != null)
+                    {
+                        partsList.Items.Clear();
+                        partsList.Refresh();
+                    }
+
+                    // Update visualization panel
+                    if (visualPanel != null)
+                    {
+                        visualPanel.Invalidate();
+                    }
+
+                    // Call SetControlsEnabled with parameter false
+                    SetControlsEnabled(false);
+                }));
+            }
+            else
+            {
+                // Handle is not created yet, just set values directly
                 if (txtComponentType != null) txtComponentType.Text = "";
                 if (txtFloor != null) txtFloor.Text = "";
                 if (txtElevation != null) txtElevation.Text = "";
@@ -1249,7 +1681,7 @@ namespace TakeoffBridge
 
                 // Call SetControlsEnabled with parameter false
                 SetControlsEnabled(false);
-            }));
+            }
         }
 
         private void SetControlsEnabled(bool enabled)
@@ -1623,8 +2055,25 @@ namespace TakeoffBridge
 
             try
             {
+                Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+                if (doc == null)
+                {
+                    MessageBox.Show("Could not access active document.", "Error");
+                    return;
+                }
 
+                // First, save the component properties (type, floor, elevation)
+                // Similar to what BtnSaveParent_Click does
+                MetalComponentCommands.PendingHandle = currentComponentId.Handle.ToString();
+                MetalComponentCommands.PendingParentData = new MetalComponentCommands.ParentComponentData
+                {
+                    ComponentType = txtComponentType.Text,
+                    Floor = txtFloor.Text,
+                    Elevation = txtElevation.Text
+                };
+                doc.SendStringToExecute("UPDATEPARENT ", true, false, true); // Note: last parameter is true for synchronous execution
 
+                // Then, save the child parts data
                 // Create a new list to avoid reference issues
                 List<ChildPart> partsCopy = new List<ChildPart>();
                 foreach (var part in currentParts)
@@ -1637,14 +2086,7 @@ namespace TakeoffBridge
                 MetalComponentCommands.PendingParts = partsCopy;
 
                 // Execute the command
-                Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
-                if (doc == null)
-                {
-                    MessageBox.Show("Could not access active document.", "Error");
-                    return;
-                }
-
-                doc.SendStringToExecute("UPDATEMETAL ", true, false, false);
+                doc.SendStringToExecute("UPDATEMETAL ", true, false, true); // Use synchronous execution
 
                 MessageBox.Show("Changes saved successfully.", "Save Complete");
                 forceRefreshOnNextSelection = true;
@@ -1726,6 +2168,63 @@ namespace TakeoffBridge
                 {
                     MessageBox.Show($"Error executing ADDMETALPART command: {ex.Message}", "Command Error");
                 }
+            }
+        }
+
+        private void BtnCreateOpening_Click(object sender, EventArgs e)
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+
+            try
+            {
+                // Make sure we have a clean state
+                if (MetalComponentCommands.PendingOpeningData == null)
+                {
+                    MetalComponentCommands.PendingOpeningData = new MetalComponentCommands.OpeningComponentData();
+                }
+
+                // Set values from existing panel controls
+                MetalComponentCommands.PendingOpeningData.Floor = txtFloor.Text;
+                MetalComponentCommands.PendingOpeningData.Elevation = txtElevation.Text;
+
+                // Determine component types based on current component type
+                bool isHorizontal = txtComponentType.Text.ToUpper().Contains("HORIZONTAL");
+                bool isVertical = txtComponentType.Text.ToUpper().Contains("VERTICAL");
+
+                MetalComponentCommands.PendingOpeningData.TopType = isHorizontal ? "Head" : "Horizontal";
+                MetalComponentCommands.PendingOpeningData.BottomType = isHorizontal ? "Sill" : "Horizontal";
+                MetalComponentCommands.PendingOpeningData.LeftType = isVertical ? "JambL" : "Vertical";
+                MetalComponentCommands.PendingOpeningData.RightType = isVertical ? "JambR" : "Vertical";
+
+                // Enable all sides by default
+                MetalComponentCommands.PendingOpeningData.CreateTop = true;
+                MetalComponentCommands.PendingOpeningData.CreateBottom = true;
+                MetalComponentCommands.PendingOpeningData.CreateLeft = true;
+                MetalComponentCommands.PendingOpeningData.CreateRight = true;
+
+                // Add a special flag to force dialog to open
+                MetalComponentCommands.PendingOpeningData.ForceDialogToOpen = true;
+
+                // Enable this debug output to track what's happening
+                System.Diagnostics.Debug.WriteLine("---- SETTING OPENING DATA IN PANEL ----");
+                System.Diagnostics.Debug.WriteLine($"Floor: {MetalComponentCommands.PendingOpeningData.Floor}");
+                System.Diagnostics.Debug.WriteLine($"Elevation: {MetalComponentCommands.PendingOpeningData.Elevation}");
+                System.Diagnostics.Debug.WriteLine($"TopType: {MetalComponentCommands.PendingOpeningData.TopType}");
+                System.Diagnostics.Debug.WriteLine($"BottomType: {MetalComponentCommands.PendingOpeningData.BottomType}");
+                System.Diagnostics.Debug.WriteLine($"LeftType: {MetalComponentCommands.PendingOpeningData.LeftType}");
+                System.Diagnostics.Debug.WriteLine($"RightType: {MetalComponentCommands.PendingOpeningData.RightType}");
+                System.Diagnostics.Debug.WriteLine("---- END SETTING OPENING DATA ----");
+
+                // Directly execute the command
+                doc.SendStringToExecute("CREATEOPENINGCOMPONENTS ", true, false, false);
+
+
+            }
+            catch (System.Exception ex)
+            {
+                MessageBox.Show($"Error initiating opening component creation: {ex.Message}",
+                               "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
