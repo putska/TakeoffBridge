@@ -1499,8 +1499,27 @@ namespace TakeoffBridge
             // Get the vertical component's actual length
             double verticalLength = currentComponentLength;
 
-            // Set scaling factor to fit vertical component in panel height with padding
+            // Find the main vertical body part to get adjustments
+            double startAdj = 0;
+            double endAdj = 0;
+            if (currentParts != null && currentParts.Count > 0)
+            {
+                var verticalBody = currentParts.FirstOrDefault(p => p.Clips);
+                if (verticalBody != null)
+                {
+                    startAdj = verticalBody.StartAdjustment;
+                    endAdj = verticalBody.EndAdjustment;
+
+                    // Calculate adjusted length considering both start and end adjustments
+                    verticalLength = currentComponentLength + startAdj + endAdj;
+                }
+            }
+
+            System.Diagnostics.Debug.WriteLine($"Original length: {currentComponentLength}, Adjusted length: {verticalLength}");
+
+            // Set scaling factor based on adjusted vertical length
             double scaleFactor = (attachmentPanel.Height - (borderPadding * 2)) / verticalLength;
+            System.Diagnostics.Debug.WriteLine($"Scale factor: {scaleFactor}");
 
             // Draw the vertical component line
             int xCenter = attachmentPanel.Width / 2;  // Center of panel
@@ -1533,9 +1552,8 @@ namespace TakeoffBridge
             var leftAttachments = currentAttachments.Where(a => a.Side == "L").ToList();
             var rightAttachments = currentAttachments.Where(a => a.Side == "R").ToList();
 
-            // Draw the attachments on each side
-            DrawSideAttachments(g, leftAttachments, xCenter, yTop, yBottom, verticalLength, scaleFactor, -1, verticalStartAdj);
-            DrawSideAttachments(g, rightAttachments, xCenter, yTop, yBottom, verticalLength, scaleFactor, 1, verticalStartAdj);
+            DrawSideAttachments(g, leftAttachments, xCenter, yTop, yBottom, verticalLength, scaleFactor, -1, startAdj);
+            DrawSideAttachments(g, rightAttachments, xCenter, yTop, yBottom, verticalLength, scaleFactor, 1, startAdj);
 
             // Draw labels
             g.DrawString("Left Side", new System.Drawing.Font(this.Font, FontStyle.Bold), Brushes.Blue, 10, 10);
@@ -1558,11 +1576,21 @@ namespace TakeoffBridge
             {
                 try
                 {
+                    // send the attach.Height to the debug window
+                    System.Diagnostics.Debug.WriteLine($"Attachment height: {attach.Height}");
+
+                    double heightPercentage = attach.Height / verticalLength;
+                    int yPos = yBottom - (int)((yBottom - yTop) * heightPercentage);
+
                     // Calculate adjusted height (accounting for vertical start adjustment)
                     double adjustedHeight = attach.Height + verticalStartAdj;
+                    // send the adjustedHeight to the debug window
+                    //System.Diagnostics.Debug.WriteLine($"Adjusted height: {adjustedHeight}");
 
                     // Calculate position on the Y axis, based on adjusted height
-                    int yPos = yBottom - (int)(adjustedHeight * scaleFactor);
+                    //int yPos = yBottom - (int)(adjustedHeight * scaleFactor);
+                    // send the yPos to the debug window
+                    System.Diagnostics.Debug.WriteLine($"Y position: {yPos}");
 
                     // Ensure it's within the vertical bounds
                     yPos = Math.Max(yTop, Math.Min(yBottom, yPos));
@@ -1572,6 +1600,8 @@ namespace TakeoffBridge
 
                     // Draw horizontal line
                     g.DrawLine(linePen, xCenter, yPos, xPos, yPos);
+                    // output the points to the debug console
+                    System.Diagnostics.Debug.WriteLine($"Drawing line from ({xCenter}, {yPos}) to ({xPos}, {yPos})");
 
                     // Add arrow at the end
                     g.FillPolygon(new SolidBrush(sideColor), new Point[] {
