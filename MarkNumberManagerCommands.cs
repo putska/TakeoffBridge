@@ -22,28 +22,6 @@ namespace TakeoffBridge
         }
 
 
-        [CommandMethod("MARKNUMBERREPORT")]
-        public void GenerateMarkNumberReport()
-        {
-            Document doc = Application.DocumentManager.MdiActiveDocument;
-            Editor ed = doc.Editor;
-
-            // Get the mark number manager
-            var manager = GlassTakeoffBridge.GlassTakeoffApp.MarkNumberManager;
-
-            // Generate a simple report
-            ed.WriteMessage("\n--- Mark Number Report ---");
-
-            // Get counts from the manager (you'll need to add these methods)
-            // int horizontalCount = manager.GetHorizontalPartCount();
-            // int verticalCount = manager.GetVerticalPartCount();
-
-            ed.WriteMessage($"\nHorizontal Mark Count: {manager.GetHorizontalPartCount()}");
-            ed.WriteMessage($"\nVertical Mark Count: {manager.GetVerticalPartCount()}");
-
-            ed.WriteMessage("\n--- End of Report ---");
-        }
-
         [CommandMethod("LISTMARKNUMBERS")]
         public void ListMarkNumbers()
         {

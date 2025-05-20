@@ -1210,6 +1210,12 @@ namespace TakeoffBridge
                     // Add new component panel to palette set
                     _paletteSet.Add("Create Parts", newPanel);
 
+                    ed.WriteMessage("\nCreating elevations panel...");
+                    // Create the elevations panel
+                    ElevationPanel elevationsPanel = new ElevationPanel();
+                    // Add elevations panel to palette set
+                    _paletteSet.Add("Elevations", elevationsPanel);
+
                     ed.WriteMessage("\nPanels added successfully.");
                 }
 
@@ -1592,7 +1598,9 @@ namespace TakeoffBridge
                             "_boundary",
                             new Point3d(centerPoint.X, centerPoint.Y, 0),  // Specify center point directly
                             "_a",                     // All visible layers
-                            "n",                      // Do not create a new boundary set
+                            "i",                      // Island options (i for islands)
+                            "n",                      // No for island detection to only get Outer boundary
+                            "",                       // Default Ray Cast
                             "",                       // Accept default boundary name
                             ""                        // End command
                         );

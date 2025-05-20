@@ -114,6 +114,9 @@
     <Compile Include="DrawFabCommands.cs" />
     <Compile Include="DrawingComponentManager.cs" />
     <Compile Include="ElevationManager.cs" />
+    <Compile Include="ElevationPanel.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
     <Compile Include="ExcelExport.cs" />
     <Compile Include="FabricationManager.cs" />
     <Compile Include="FabricationTicketCommands.cs" />

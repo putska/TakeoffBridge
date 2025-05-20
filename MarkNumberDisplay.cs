@@ -29,7 +29,7 @@ namespace TakeoffBridge
         private bool _suppressEvents = false;
 
         // Default formatting values
-        private double _textHeight = 2.25;
+        private double _textHeight = 4.0;
         private string _textStyleName = "Arial Narrow";
         private double _defaultHorizontalOffset = 5.0;
         private double _defaultVerticalOffset = 5.0;
