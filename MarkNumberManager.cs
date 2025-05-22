@@ -952,41 +952,10 @@ namespace TakeoffBridge
             return string.Empty;
         }
 
-        // Load attachments from drawing
         private List<Attachment> LoadAttachmentsFromDrawing(Transaction tr)
         {
-            List<Attachment> attachments = new List<Attachment>();
-
-            // Use the stored database reference
-            Database db = _db;
-
-            // Get named objects dictionary
-            DBDictionary nod = (DBDictionary)tr.GetObject(db.NamedObjectsDictionaryId, OpenMode.ForRead);
-
-            // Check if entry exists
-            const string dictName = "METALATTACHMENTS";
-
-            if (nod.Contains(dictName))
-            {
-                DBObject obj = tr.GetObject(nod.GetAt(dictName), OpenMode.ForRead);
-                if (obj is Xrecord)
-                {
-                    Xrecord xrec = obj as Xrecord;
-                    ResultBuffer rb = xrec.Data;
-
-                    if (rb != null)
-                    {
-                        TypedValue[] values = rb.AsArray();
-                        if (values.Length > 0 && values[0].TypeCode == (int)DxfCode.Text)
-                        {
-                            string json = values[0].Value.ToString();
-                            attachments = JsonConvert.DeserializeObject<List<Attachment>>(json);
-                        }
-                    }
-                }
-            }
-
-            return attachments;
+            // Use the centralized method with the transaction
+            return DrawingComponentManager.LoadAttachmentsFromDrawing(tr);
         }
 
         #endregion

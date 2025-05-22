@@ -838,7 +838,7 @@ namespace TakeoffBridge
                     }
 
                     // Save attachments to the drawing using the central manager
-                    DrawingComponentManager.Instance.SaveAttachmentsToDrawing(attachments, tr);
+                    DrawingComponentManager.SaveAttachmentsToDrawing(attachments, tr);
 
                     tr.Commit();
 

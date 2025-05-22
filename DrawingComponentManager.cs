@@ -164,54 +164,257 @@ namespace TakeoffBridge
         /// </summary>
         public List<Attachment> GetAllAttachments(Transaction tr = null)
         {
-            bool ownsTransaction = (tr == null);
-            List<Attachment> attachments = new List<Attachment>();
+            try
+            {
+                System.Diagnostics.Debug.WriteLine("GetAllAttachments called - using centralized loading method");
+
+                // Use the centralized loading method that supports chunking
+                List<Attachment> attachments = LoadAttachmentsFromDrawing(tr);
+
+                System.Diagnostics.Debug.WriteLine($"GetAllAttachments loaded {attachments.Count} attachments");
+
+                return attachments;
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error in GetAllAttachments: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Stack trace: {ex.StackTrace}");
+
+                // Return empty list instead of throwing to prevent cascading failures
+                return new List<Attachment>();
+            }
+        }
+
+        #region Attachment Storage
+
+        /// <summary>
+        /// Saves a list of attachments to the drawing's Named Objects Dictionary using chunking for large data sets.
+        /// </summary>
+        /// <param name="attachments">The attachments to save</param>
+        /// <param name="tr">Optional existing transaction. If null, a new transaction will be created and committed.</param>
+        public static void SaveAttachmentsToDrawing(List<Attachment> attachments, Transaction tr = null)
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+
+            Database db = doc.Database;
+
+            // Serialize to JSON
+            string attachmentsJson = JsonConvert.SerializeObject(attachments);
+            System.Diagnostics.Debug.WriteLine($"Serialized {attachments.Count} attachments to JSON: {attachmentsJson.Length} chars");
+
+            // Determine if we need to manage the transaction
+            bool localTrans = (tr == null);
+            tr = tr ?? db.TransactionManager.StartTransaction();
 
             try
             {
-                if (ownsTransaction)
-                {
-                    tr = _db.TransactionManager.StartTransaction();
-                }
-
                 // Get named objects dictionary
-                DBDictionary nod = (DBDictionary)tr.GetObject(_db.NamedObjectsDictionaryId, OpenMode.ForRead);
+                DBDictionary nod = (DBDictionary)tr.GetObject(db.NamedObjectsDictionaryId, OpenMode.ForWrite);
 
-                // Check if attachment entry exists
-                const string dictName = "METALATTACHMENTS";
-                if (nod.Contains(dictName))
+                // Clear existing entries
+                const string baseKey = "METALATTACHMENTS";
+
+                // Remove all existing attachment entries
+                List<string> keysToRemove = new List<string>();
+                foreach (DBDictionaryEntry entry in nod)
                 {
-                    DBObject obj = tr.GetObject(nod.GetAt(dictName), OpenMode.ForRead);
-                    if (obj is Xrecord xrec && xrec.Data != null)
+                    if (entry.Key == baseKey || entry.Key.StartsWith($"{baseKey}_"))
                     {
-                        TypedValue[] values = xrec.Data.AsArray();
-                        if (values.Length > 0 && values[0].TypeCode == (int)DxfCode.Text)
-                        {
-                            string json = values[0].Value.ToString();
-                            attachments = JsonConvert.DeserializeObject<List<Attachment>>(json);
-                        }
+                        keysToRemove.Add(entry.Key);
                     }
                 }
 
-                if (ownsTransaction)
+                foreach (string key in keysToRemove)
+                {
+                    if (nod.Contains(key))
+                    {
+                        ObjectId id = nod.GetAt(key);
+                        DBObject obj = tr.GetObject(id, OpenMode.ForWrite);
+                        obj.Erase();
+                    }
+                }
+
+                // Use chunking for all attachment data
+                const int chunkSize = 8000;  // Safe size for individual chunks
+                int numChunks = (int)Math.Ceiling((double)attachmentsJson.Length / chunkSize);
+
+                // Save metadata first
+                Xrecord metaRec = new Xrecord();
+                ResultBuffer metaRb = new ResultBuffer(
+                    new TypedValue((int)DxfCode.Text, $"{attachments.Count},{attachmentsJson.Length},{numChunks}")
+                );
+                metaRec.Data = metaRb;
+                nod.SetAt($"{baseKey}_META", metaRec);
+                tr.AddNewlyCreatedDBObject(metaRec, true);
+
+                // Save chunks
+                for (int i = 0; i < numChunks; i++)
+                {
+                    int startIdx = i * chunkSize;
+                    int length = Math.Min(chunkSize, attachmentsJson.Length - startIdx);
+                    string chunk = attachmentsJson.Substring(startIdx, length);
+
+                    Xrecord chunkRec = new Xrecord();
+                    ResultBuffer rb = new ResultBuffer(
+                        new TypedValue((int)DxfCode.Text, chunk)
+                    );
+                    chunkRec.Data = rb;
+
+                    nod.SetAt($"{baseKey}_{i:D3}", chunkRec);
+                    tr.AddNewlyCreatedDBObject(chunkRec, true);
+                }
+
+                System.Diagnostics.Debug.WriteLine($"Saved attachments in {numChunks} chunks");
+
+                // Only commit if we created the transaction
+                if (localTrans)
                 {
                     tr.Commit();
                 }
             }
             catch (System.Exception ex)
             {
-                Application.DocumentManager.MdiActiveDocument.Editor.WriteMessage($"\nError loading attachments: {ex.Message}");
-
-                if (ownsTransaction && tr != null)
+                System.Diagnostics.Debug.WriteLine($"Error saving attachments: {ex.Message}");
+                if (localTrans)
                 {
                     tr.Abort();
                 }
-
-                throw;
+                throw; // Re-throw the exception for proper error handling upstream
             }
             finally
             {
-                if (ownsTransaction && tr != null)
+                if (localTrans && tr != null)
+                {
+                    tr.Dispose();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Loads all attachments from the drawing's Named Objects Dictionary.
+        /// Supports both legacy single-record and chunked storage formats.
+        /// </summary>
+        /// <param name="tr">Optional existing transaction. If null, a new transaction will be created.</param>
+        /// <returns>List of loaded attachments</returns>
+        public static List<Attachment> LoadAttachmentsFromDrawing(Transaction tr = null)
+        {
+            List<Attachment> attachments = new List<Attachment>();
+
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return attachments;
+
+            Database db = doc.Database;
+
+            // Determine if we need to manage the transaction
+            bool localTrans = (tr == null);
+            tr = tr ?? db.TransactionManager.StartTransaction();
+
+            try
+            {
+                // Get named objects dictionary
+                DBDictionary nod = (DBDictionary)tr.GetObject(db.NamedObjectsDictionaryId, OpenMode.ForRead);
+
+                const string baseKey = "METALATTACHMENTS";
+
+                // First check for chunked data
+                if (nod.Contains($"{baseKey}_META"))
+                {
+                    Xrecord metaRec = (Xrecord)tr.GetObject(nod.GetAt($"{baseKey}_META"), OpenMode.ForRead);
+                    ResultBuffer metaRb = metaRec.Data;
+
+                    if (metaRb != null && metaRb.AsArray().Length > 0)
+                    {
+                        string metaStr = metaRb.AsArray()[0].Value.ToString();
+                        string[] parts = metaStr.Split(',');
+
+                        if (parts.Length >= 3)
+                        {
+                            int count = int.Parse(parts[0]);
+                            int jsonLength = int.Parse(parts[1]);
+                            int numChunks = int.Parse(parts[2]);
+
+                            System.Diagnostics.Debug.WriteLine($"Found {count} attachments in {numChunks} chunks");
+
+                            // Assemble JSON from chunks
+                            StringBuilder jsonBuilder = new StringBuilder(jsonLength);
+
+                            for (int i = 0; i < numChunks; i++)
+                            {
+                                string chunkKey = $"{baseKey}_{i:D3}";
+
+                                if (nod.Contains(chunkKey))
+                                {
+                                    Xrecord chunkRec = (Xrecord)tr.GetObject(nod.GetAt(chunkKey), OpenMode.ForRead);
+                                    ResultBuffer chunkRb = chunkRec.Data;
+
+                                    if (chunkRb != null && chunkRb.AsArray().Length > 0)
+                                    {
+                                        jsonBuilder.Append(chunkRb.AsArray()[0].Value.ToString());
+                                    }
+                                }
+                            }
+
+                            string json = jsonBuilder.ToString();
+                            System.Diagnostics.Debug.WriteLine($"Reassembled JSON length: {json.Length}");
+
+                            try
+                            {
+                                attachments = JsonConvert.DeserializeObject<List<Attachment>>(json);
+                                System.Diagnostics.Debug.WriteLine($"Loaded {attachments.Count} attachments from chunks");
+                            }
+                            catch (System.Exception ex)
+                            {
+                                System.Diagnostics.Debug.WriteLine($"Error deserializing chunked JSON: {ex.Message}");
+                                throw; // Re-throw for proper error handling
+                            }
+                        }
+                    }
+                }
+                // Fall back to legacy format
+                else if (nod.Contains(baseKey))
+                {
+                    Xrecord xrec = (Xrecord)tr.GetObject(nod.GetAt(baseKey), OpenMode.ForRead);
+                    ResultBuffer rb = xrec.Data;
+
+                    if (rb != null && rb.AsArray().Length > 0)
+                    {
+                        string json = rb.AsArray()[0].Value.ToString();
+                        try
+                        {
+                            attachments = JsonConvert.DeserializeObject<List<Attachment>>(json);
+                            System.Diagnostics.Debug.WriteLine($"Loaded {attachments.Count} attachments from single record");
+                        }
+                        catch (System.Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"Error deserializing single-record JSON: {ex.Message}");
+                            throw; // Re-throw for proper error handling
+                        }
+                    }
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("No attachment data found in drawing");
+                }
+
+                // Only commit if we created the transaction
+                if (localTrans)
+                {
+                    tr.Commit();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error loading attachments: {ex.Message}");
+                if (localTrans)
+                {
+                    tr.Abort();
+                }
+                throw; // Re-throw the exception for proper error handling upstream
+            }
+            finally
+            {
+                if (localTrans && tr != null)
                 {
                     tr.Dispose();
                 }
@@ -220,74 +423,7 @@ namespace TakeoffBridge
             return attachments;
         }
 
-        /// <summary>
-        /// Saves attachments to the drawing
-        /// </summary>
-        public void SaveAttachmentsToDrawing(List<Attachment> attachments, Transaction tr = null)
-        {
-            bool ownsTransaction = (tr == null);
-
-            try
-            {
-                if (ownsTransaction)
-                {
-                    tr = _db.TransactionManager.StartTransaction();
-                }
-
-                // Serialize attachments to JSON
-                string json = JsonConvert.SerializeObject(attachments);
-
-                // Get named objects dictionary
-                DBDictionary nod = (DBDictionary)tr.GetObject(_db.NamedObjectsDictionaryId, OpenMode.ForWrite);
-
-                // Create or update dictionary entry
-                const string dictName = "METALATTACHMENTS";
-
-                if (nod.Contains(dictName))
-                {
-                    // Update existing
-                    DBObject obj = tr.GetObject(nod.GetAt(dictName), OpenMode.ForWrite);
-                    if (obj is Xrecord xrec)
-                    {
-                        ResultBuffer rb = new ResultBuffer(new TypedValue((int)DxfCode.Text, json));
-                        xrec.Data = rb;
-                    }
-                }
-                else
-                {
-                    // Create new
-                    Xrecord xrec = new Xrecord();
-                    ResultBuffer rb = new ResultBuffer(new TypedValue((int)DxfCode.Text, json));
-                    xrec.Data = rb;
-
-                    nod.SetAt(dictName, xrec);
-                    tr.AddNewlyCreatedDBObject(xrec, true);
-                }
-
-                if (ownsTransaction)
-                {
-                    tr.Commit();
-                }
-            }
-            catch (System.Exception ex)
-            {
-                Application.DocumentManager.MdiActiveDocument.Editor.WriteMessage($"\nError saving attachments: {ex.Message}");
-
-                if (ownsTransaction && tr != null)
-                {
-                    tr.Abort();
-                }
-
-                throw;
-            }
-            finally
-            {
-                if (ownsTransaction && tr != null)
-                {
-                    tr.Dispose();
-                }
-            }
-        }
+        #endregion
 
         /// <summary>
         /// Processes components and attachments together to match them properly

@@ -424,46 +424,10 @@ namespace TakeoffBridge
             }
         }
 
-        // Helper method to load attachments from the drawing
         private List<Attachment> LoadAttachmentsFromDrawing()
         {
-            List<Attachment> loadedAttachments = new List<Attachment>();
-            Document doc = Application.DocumentManager.MdiActiveDocument;
-            Database db = doc.Database;
-            Editor editor = doc.Editor;
-
-            using (Transaction tr = db.TransactionManager.StartTransaction())
-            {
-                // Get named objects dictionary
-                DBDictionary nod = (DBDictionary)tr.GetObject(db.NamedObjectsDictionaryId, OpenMode.ForRead);
-                // Check if entry exists
-                const string dictName = "METALATTACHMENTS";
-                if (nod.Contains(dictName))
-                {
-                    DBObject obj = tr.GetObject(nod.GetAt(dictName), OpenMode.ForRead);
-                    if (obj is Xrecord)
-                    {
-                        Xrecord xrec = obj as Xrecord;
-                        ResultBuffer rb = xrec.Data;
-                        if (rb != null)
-                        {
-                            TypedValue[] values = rb.AsArray();
-                            if (values.Length > 0 && values[0].TypeCode == (int)DxfCode.Text)
-                            {
-                                string json = values[0].Value.ToString();
-                                editor.WriteMessage($"\nJSON Value: {json}");
-                                loadedAttachments = JsonConvert.DeserializeObject<List<Attachment>>(json);
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    editor.WriteMessage("\nNo METALATTACHMENTS dictionary found in drawing");
-                }
-                tr.Commit();
-            }
-            return loadedAttachments;
+            // Use the centralized method
+            return DrawingComponentManager.LoadAttachmentsFromDrawing();
         }
 
         // Your existing GetComponentType method

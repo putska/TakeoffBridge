@@ -644,8 +644,7 @@ namespace TakeoffBridge
                 string partNo = group.Key.PartNumber;
                 string fab = group.Key.Fab;
                 string finish = group.Key.Finish;
-
-                ed.WriteMessage($"\nProcessing part group: {partNo}-{fab} ({finish})");
+                ed.WriteMessage($"\nProcessing part group: {partNo}-{fab} ({finish}) - {group.Count()} total parts");
 
                 // Get template path
                 string templatePath = Path.Combine(DiesPath, $"{partNo}-{fab}.dwg");
@@ -655,13 +654,28 @@ namespace TakeoffBridge
                     continue;
                 }
 
-                // Process parts in chunks of MAX_ROWS_PER_TICKET
-                int pageNo = 1;
-                List<PartInfo> currentPage = new List<PartInfo>();
+                // Group by mark number and length to consolidate quantities ONCE here
+                var consolidatedParts = group
+                    .GroupBy(p => new { p.MarkNumber, p.Length, p.IsShopUse })
+                    .Select(g => new {
+                        Part = g.First(), // Representative part
+                        Quantity = g.Count() // Total quantity
+                    })
+                    .OrderByDescending(p => p.Part.Length)
+                    .ToList();
 
-                foreach (var part in group)
+                ed.WriteMessage($"\n  Consolidated {group.Count()} parts into {consolidatedParts.Count} unique items");
+
+                // Process consolidated parts in chunks of MaxRowsPerTicket
+                int pageNo = 1;
+                List<dynamic> currentPage = new List<dynamic>();
+
+                foreach (var consolidatedPart in consolidatedParts)
                 {
-                    // If we're at row limit or the part has attachments (one part per sheet for attachments)
+                    var part = consolidatedPart.Part;
+                    var quantity = consolidatedPart.Quantity;
+
+                    // If we're at row limit OR the part has attachments (one part per sheet for attachments)
                     if (currentPage.Count >= MaxRowsPerTicket || part.Attachments.Count > 0)
                     {
                         // If we have parts in the current page, create a ticket
@@ -669,6 +683,7 @@ namespace TakeoffBridge
                         {
                             string ticketFile = Path.Combine(FabsPath, $"{partNo}_{pageNo:D2}.dwg");
                             CreateFabricationTicket(templatePath, ticketFile, currentPage, pageNo);
+                            ed.WriteMessage($"\n  Created ticket page {pageNo} with {currentPage.Count} line items");
                             pageNo++;
                             currentPage.Clear();
                         }
@@ -677,19 +692,20 @@ namespace TakeoffBridge
                         if (part.Attachments.Count > 0)
                         {
                             string ticketFile = Path.Combine(FabsPath, $"{partNo}_{pageNo:D2}.dwg");
-                            CreateFabricationTicket(templatePath, ticketFile, new List<PartInfo> { part }, pageNo);
+                            CreateFabricationTicket(templatePath, ticketFile, new List<dynamic> { new { Part = part, Quantity = quantity } }, pageNo);
+                            ed.WriteMessage($"\n  Created attachment ticket page {pageNo} for part with {part.Attachments.Count} attachments");
                             pageNo++;
                         }
                         else
                         {
                             // Otherwise add it to a new page
-                            currentPage.Add(part);
+                            currentPage.Add(new { Part = part, Quantity = quantity });
                         }
                     }
                     else
                     {
                         // Add to current page
-                        currentPage.Add(part);
+                        currentPage.Add(new { Part = part, Quantity = quantity });
                     }
                 }
 
@@ -698,6 +714,7 @@ namespace TakeoffBridge
                 {
                     string ticketFile = Path.Combine(FabsPath, $"{partNo}_{pageNo:D2}.dwg");
                     CreateFabricationTicket(templatePath, ticketFile, currentPage, pageNo);
+                    ed.WriteMessage($"\n  Created final ticket page {pageNo} with {currentPage.Count} line items");
                 }
             }
         }
@@ -705,16 +722,16 @@ namespace TakeoffBridge
         /// <summary>
         /// Creates a fabrication ticket for a group of parts using the database-only approach
         /// </summary>
-        private void CreateFabricationTicket(string templatePath, string outputPath, List<PartInfo> parts, int pageNo)
+        private void CreateFabricationTicket(string templatePath, string outputPath, List<dynamic> partsWithQuantities, int pageNo)
         {
-            if (parts.Count == 0) return;
+            if (partsWithQuantities.Count == 0) return;
             Document currentDoc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = currentDoc.Editor;
             ed.WriteMessage($"\nCreating fabrication ticket: {outputPath}");
 
             // Determine if this is a vertical part (has attachments)
             // Using the representative part (first in the list)
-            var representativePart = parts.First();
+            var representativePart = partsWithQuantities.First().Part; // Access the Part property
             bool isVertical = representativePart.Attachments != null && representativePart.Attachments.Count > 0;
 
             try
@@ -759,8 +776,8 @@ namespace TakeoffBridge
                         // Add header information to paper space
                         AddHeaderText(paperSpace, tr, representativePart, pageNo, db);
 
-                        // Add parts to the table in paper space - now with isVertical parameter
-                        AddPartsToTable(paperSpace, tr, parts, db, isVertical);
+                        // Add parts to the table in paper space - now passing the partsWithQuantities
+                        AddPartsToTable(paperSpace, tr, partsWithQuantities, db, isVertical);
 
                         // Set layer visibility based on vertical status
                         SetLayerVisibility(db, tr, isVertical);
@@ -777,8 +794,9 @@ namespace TakeoffBridge
                                 ed.WriteMessage($"\nTemplate workpoint found: ({templateWorkPoint.Value.X}, {templateWorkPoint.Value.Y}, {templateWorkPoint.Value.Z})");
                             }
                             // Process each part's attachments
-                            foreach (var part in parts)
+                            foreach (var item in partsWithQuantities)
                             {
+                                var part = item.Part;
                                 if (part.Attachments != null && part.Attachments.Count > 0)
                                 {
                                     ProcessAttachmentsForTicket(part, db, tr);
@@ -893,42 +911,22 @@ namespace TakeoffBridge
         /// <summary>
         /// Adds parts information to the ticket table, with special handling for vertical tickets
         /// </summary>
-        private void AddPartsToTable(BlockTableRecord paperSpace, Transaction tr, List<PartInfo> parts, Database db, bool isVertical)
+        private void AddPartsToTable(BlockTableRecord paperSpace, Transaction tr, List<dynamic> partsWithQuantities, Database db, bool isVertical)
         {
             // For vertical tickets, adjust the starting position and max rows
             double startY = isVertical ? TableStartY - (TableRowHeight * (MaxRowsPerTicket)) : TableStartY;
             int maxRows = isVertical ? 1 : MaxRowsPerTicket;
             double currentY = startY;
 
-            // Group parts by mark number and sum quantities
-            var groupedParts = parts
-                .GroupBy(p => new {
-                    p.MarkNumber,
-                    p.Length,
-                    p.IsShopUse
-                    // Add any other properties that should be identical for grouping
-                })
-                .Select(group => new {
-                    MarkNumber = group.Key.MarkNumber,
-                    Length = group.Key.Length,
-                    IsShopUse = group.Key.IsShopUse,
-                    Quantity = group.Count(), // Count of identical parts
-                                              // You could also sum other numeric properties here if needed
-                                              // Example: TotalWeight = group.Sum(p => p.Weight)
-
-
-                })
-                .ToList();
-
-            // Sort the grouped parts if needed
-            // groupedParts = groupedParts.OrderBy(p => p.MarkNumber).ToList();
-
             int row = 1;
-            foreach (var part in groupedParts)
+            foreach (var item in partsWithQuantities)
             {
                 // Don't exceed max rows per ticket
                 if (row > maxRows)
                     break;
+
+                PartInfo part = item.Part;
+                int quantity = item.Quantity;
 
                 // Mark number
                 AddDText(paperSpace, tr, part.MarkNumber, TableStartX + 0.3, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
@@ -937,10 +935,8 @@ namespace TakeoffBridge
                 string formattedLength = FormatInches(part.Length);
                 AddDText(paperSpace, tr, formattedLength, TableStartX + 0.98, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
 
-                // Quantity - now using the count from grouping
-                AddDText(paperSpace, tr, part.Quantity.ToString(), TableStartX + 2.214, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
-
-
+                // Quantity
+                AddDText(paperSpace, tr, quantity.ToString(), TableStartX + 2.214, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
 
                 // Shop use indicator
                 if (part.IsShopUse)
@@ -949,7 +945,6 @@ namespace TakeoffBridge
                 }
                 else
                 {
-                    // Distribution information would go here
                     AddDText(paperSpace, tr, "FIELD", TableStartX + 2.214 + 1.39625, currentY, DefaultTextHeight, TextHorizontalMode.TextLeft, db);
                 }
 

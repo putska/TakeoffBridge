@@ -1428,55 +1428,8 @@ namespace TakeoffBridge
 
         private List<Attachment> LoadAttachmentsFromDrawing()
         {
-            List<Attachment> attachments = new List<Attachment>();
-
-            Document doc = Application.DocumentManager.MdiActiveDocument;
-            Database db = doc.Database;
-
-            using (Transaction tr = db.TransactionManager.StartTransaction())
-            {
-                // Get named objects dictionary
-                DBDictionary nod = (DBDictionary)tr.GetObject(db.NamedObjectsDictionaryId, OpenMode.ForRead);
-
-                // Check if entry exists
-                const string dictName = "METALATTACHMENTS";
-
-                if (nod.Contains(dictName))
-                {
-                    DBObject obj = tr.GetObject(nod.GetAt(dictName), OpenMode.ForRead);
-                    if (obj is Xrecord)
-                    {
-                        Xrecord xrec = obj as Xrecord;
-                        ResultBuffer rb = xrec.Data;
-
-                        if (rb != null)
-                        {
-                            TypedValue[] values = rb.AsArray();
-                            if (values.Length > 0 && values[0].TypeCode == (int)DxfCode.Text)
-                            {
-                                string json = values[0].Value.ToString();
-                                try
-                                {
-                                    attachments = JsonConvert.DeserializeObject<List<Attachment>>(json);
-                                    System.Diagnostics.Debug.WriteLine($"Loaded {attachments.Count} total attachments from drawing");
-                                }
-                                catch (System.Exception ex)
-                                {
-                                    System.Diagnostics.Debug.WriteLine($"Error deserializing attachments: {ex.Message}");
-                                }
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    System.Diagnostics.Debug.WriteLine("No METALATTACHMENTS dictionary found in drawing");
-                }
-
-                tr.Commit();
-            }
-
-            return attachments;
+            // Use the centralized method instead
+            return DrawingComponentManager.LoadAttachmentsFromDrawing();
         }
 
         // Add the Attachment paint method
